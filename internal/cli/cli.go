@@ -29,7 +29,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		r.json, args = true, args[1:]
 	}
 	if len(args) == 0 {
-		r.fail(fmt.Errorf("usage: agentline [--json] <create|join|send|read|wait|done|status|mcp|server|local>"))
+		r.fail(fmt.Errorf("usage: agentline [--json] <create|join|send|read|wait|done|status|mcp|server|local|setup|doctor>"))
 		return 2
 	}
 	var err error
@@ -54,6 +54,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		err = r.server(args[1:])
 	case "local":
 		err = r.local(args[1:])
+	case "setup":
+		err = r.setup(args[1:])
+	case "doctor":
+		err = r.doctor(args[1:])
 	default:
 		err = fmt.Errorf("unknown command %q", args[0])
 	}

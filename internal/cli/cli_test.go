@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,9 +67,13 @@ func TestLifecyclePersistsCredentialsAndCursor(t *testing.T) {
 	if code != 0 || strings.Contains(out+stderr, credential.Token) || strings.Contains(out, "participant_token") {
 		t.Fatalf("unsafe status out=%s err=%s", out, stderr)
 	}
-	code, _, stderr = run(t, rootA, "done", "team")
+	code, firstDone, stderr := run(t, rootA, "--json", "done", "--message-id", "stable-done", "team")
 	if code != 0 {
 		t.Fatalf("done: %s", stderr)
+	}
+	code, retriedDone, stderr := run(t, rootA, "--json", "done", "--message-id", "stable-done", "team")
+	if code != 0 || firstDone != retriedDone || !strings.Contains(firstDone, `"id":"stable-done"`) {
+		t.Fatalf("idempotent done: code=%d first=%s retry=%s err=%s", code, firstDone, retriedDone, stderr)
 	}
 }
 
@@ -253,6 +258,44 @@ func TestRejectsMalformedOriginsAndInvites(t *testing.T) {
 		if code == 0 {
 			t.Fatalf("invite %q succeeded", invite)
 		}
+	}
+}
+
+func TestSetupPreviewConfirmationRefusalAndJSONNonInteractive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	code, out, stderr := run(t, t.TempDir(), "setup", "claude")
+	if code == 0 || !strings.Contains(out, ".claude") || !strings.Contains(stderr, "not confirmed") {
+		t.Fatalf("refusal code=%d out=%q err=%q", code, out, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude.json")); !os.IsNotExist(err) {
+		t.Fatalf("setup mutated after refusal: %v", err)
+	}
+	code, out, stderr = run(t, t.TempDir(), "--json", "setup", "claude")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"applied":false`) {
+		t.Fatalf("JSON preview code=%d out=%q err=%q", code, out, stderr)
+	}
+	code, out, stderr = run(t, t.TempDir(), "--json", "setup", "--yes", "claude")
+	if code != 0 || stderr != "" || !strings.Contains(out, `"applied":true`) {
+		t.Fatalf("JSON apply code=%d out=%q err=%q", code, out, stderr)
+	}
+}
+
+func TestSetupSupportsInterspersedRemoveFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if code, _, stderr := run(t, t.TempDir(), "setup", "pi", "--yes"); code != 0 {
+		t.Fatal(stderr)
+	}
+	path := filepath.Join(home, ".agents/skills/agentline/SKILL.md")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := run(t, t.TempDir(), "setup", "--remove", "pi", "--yes"); code != 0 {
+		t.Fatal(stderr)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("remove failed: %v", err)
 	}
 }
 

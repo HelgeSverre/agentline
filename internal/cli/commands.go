@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/HelgeSverre/agentline/internal/mcpserver"
 	"github.com/HelgeSverre/agentline/internal/model"
 	"github.com/HelgeSverre/agentline/internal/relay"
+	setupconfig "github.com/HelgeSverre/agentline/internal/setup"
 	"github.com/HelgeSverre/agentline/internal/store"
 )
 
@@ -191,6 +194,7 @@ func (r runner) room(args []string, minimum, maximum int) (model.RoomCredential,
 func (r runner) send(args []string) error {
 	f := r.flags("send")
 	reply := f.String("reply-to", "", "message ID being answered")
+	messageID := f.String("message-id", "", "stable ID reused when retrying this logical message")
 	if err := parseFlags(f, args); err != nil {
 		return err
 	}
@@ -198,7 +202,7 @@ func (r runner) send(args []string) error {
 	if err != nil {
 		return fmt.Errorf("send: %w", err)
 	}
-	message, err := client.New(credential.ServerURL, credential.Token, r.deps.HTTP).Send(r.ctx, credential.RoomID, "", rest[0], *reply)
+	message, err := client.New(credential.ServerURL, credential.Token, r.deps.HTTP).Send(r.ctx, credential.RoomID, *messageID, rest[0], *reply)
 	if err != nil {
 		return err
 	}
@@ -285,6 +289,7 @@ func (r runner) wait(args []string) error {
 
 func (r runner) done(args []string) error {
 	f := r.flags("done")
+	messageID := f.String("message-id", "", "stable ID reused when retrying this logical operation")
 	if err := parseFlags(f, args); err != nil {
 		return err
 	}
@@ -292,7 +297,7 @@ func (r runner) done(args []string) error {
 	if err != nil {
 		return fmt.Errorf("done: %w", err)
 	}
-	message, err := client.New(credential.ServerURL, credential.Token, r.deps.HTTP).Done(r.ctx, credential.RoomID, "")
+	message, err := client.New(credential.ServerURL, credential.Token, r.deps.HTTP).Done(r.ctx, credential.RoomID, *messageID)
 	if err != nil {
 		return err
 	}
@@ -407,5 +412,125 @@ func (r runner) local(args []string) error {
 		return r.printJSON(map[string]string{"status": "stopped"})
 	}
 	fmt.Fprintln(r.out, "Local relay stopped")
+	return nil
+}
+
+func (r runner) setup(args []string) error {
+	f := r.flags("setup")
+	yes := f.Bool("yes", false, "apply without confirmation")
+	remove := f.Bool("remove", false, "remove Agentline-owned setup")
+	if err := parseFlags(f, args); err != nil {
+		return err
+	}
+	if f.NArg() != 1 {
+		return fmt.Errorf("usage: agentline setup claude|codex|amp|pi|opencode|mcp [--yes] [--remove]")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return err
+	}
+	plan, err := setupconfig.BuildPlan(f.Arg(0), home, executable, *remove)
+	if err != nil {
+		return err
+	}
+	if warning := setupconfig.HarnessVersionWarning(f.Arg(0)); warning != "" {
+		plan.Warnings = append(plan.Warnings, warning)
+	}
+	type previewChange struct {
+		Path        string `json:"path"`
+		Description string `json:"description"`
+		Action      string `json:"action"`
+	}
+	changes := make([]previewChange, 0, len(plan.Changes))
+	for _, change := range plan.Changes {
+		action := "create"
+		if len(change.After) == 0 {
+			action = "remove"
+		} else if len(change.Before) > 0 {
+			action = "update"
+		}
+		changes = append(changes, previewChange{change.Path, change.Description, action})
+	}
+	if r.json {
+		applied := false
+		if *yes && len(plan.Changes) > 0 {
+			if err := setupconfig.Apply(plan); err != nil {
+				return err
+			}
+			applied = true
+		}
+		return r.printJSON(map[string]any{"target": plan.Target, "changes": changes, "warnings": plan.Warnings, "applied": applied})
+	}
+	if len(changes) == 0 {
+		fmt.Fprintln(r.out, "No changes needed.")
+		return nil
+	}
+	fmt.Fprintln(r.out, "Planned changes:")
+	for _, change := range changes {
+		fmt.Fprintf(r.out, "- %s %s: %s\n", change.Action, change.Path, change.Description)
+	}
+	for _, warning := range plan.Warnings {
+		fmt.Fprintln(r.out, "Warning:", warning)
+	}
+	if !*yes {
+		fmt.Fprint(r.out, "Apply these changes? [y/N] ")
+		var answer string
+		fmt.Fscanln(r.in, &answer)
+		if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+			return errors.New("setup not confirmed")
+		}
+	}
+	if err := setupconfig.Apply(plan); err != nil {
+		return err
+	}
+	fmt.Fprintln(r.out, "Setup applied.")
+	return nil
+}
+
+func (r runner) doctor(args []string) error {
+	f := r.flags("doctor")
+	target := f.String("target", "all", "target harness or all")
+	server := f.String("server", "", "relay URL")
+	if err := parseFlags(f, args); err != nil {
+		return err
+	}
+	if f.NArg() != 0 {
+		return fmt.Errorf("usage: agentline doctor [--target TARGET] [--server URL]")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return err
+	}
+	if *server == "" {
+		config, err := r.deps.Config.Load()
+		if err != nil {
+			return err
+		}
+		*server = config.ServerURL
+	}
+	report := setupconfig.Doctor(r.ctx, *target, home, executable, *server)
+	if r.json {
+		return r.printJSON(report)
+	}
+	for _, check := range report.Checks {
+		fmt.Fprintf(r.out, "[%s] %s: %s\n", strings.ToUpper(check.Status), check.Name, check.Message)
+	}
+	fmt.Fprintln(r.out, "Overall:", report.Status)
 	return nil
 }
