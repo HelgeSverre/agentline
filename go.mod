@@ -2,7 +2,10 @@ module github.com/HelgeSverre/agentline
 
 go 1.23
 
-require modernc.org/sqlite v1.34.5
+require (
+	github.com/gofrs/flock v0.12.1
+	modernc.org/sqlite v1.34.5
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

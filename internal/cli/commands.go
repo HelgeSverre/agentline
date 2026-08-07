@@ -1,15 +1,18 @@
 package cli
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/HelgeSverre/agentline/internal/client"
+	"github.com/HelgeSverre/agentline/internal/localserver"
 	"github.com/HelgeSverre/agentline/internal/model"
 	"github.com/HelgeSverre/agentline/internal/relay"
 	"github.com/HelgeSverre/agentline/internal/store"
@@ -108,7 +111,14 @@ func (r runner) create(args []string) error {
 		*server = config.ServerURL
 	}
 	if *local {
-		*server = "http://127.0.0.1:8080"
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		*server, err = (localserver.Manager{Config: r.deps.Config, Executable: executable}).Ensure(r.ctx)
+		if err != nil {
+			return err
+		}
 	}
 	if err := client.ValidateOrigin(*server); err != nil {
 		return fmt.Errorf("invalid server URL: %w", err)
@@ -324,6 +334,8 @@ func (r runner) server(args []string) error {
 	listen := f.String("listen", ":8080", "listen address")
 	publicURL := f.String("public-url", "http://localhost:8080", "external URL")
 	data := f.String("data", "agentline.db", "SQLite path")
+	localInstance := f.String("local-instance", "", "managed local relay identity")
+	explicitPublicURL := hasFlag(args, "public-url")
 	if err := parseFlags(f, args); err != nil {
 		return err
 	}
@@ -342,10 +354,44 @@ func (r runner) server(args []string) error {
 		db.Close()
 		return err
 	}
+	if !explicitPublicURL {
+		if address, ok := listener.Addr().(*net.TCPAddr); ok && address.IP.IsLoopback() {
+			*publicURL = "http://127.0.0.1:" + strconv.Itoa(address.Port)
+		}
+	}
+	address, loopback := listener.Addr().(*net.TCPAddr)
+	loopback = loopback && address.IP.IsLoopback()
+	if *localInstance != "" && !loopback {
+		listener.Close()
+		db.Close()
+		return fmt.Errorf("--local-instance requires a loopback listener")
+	}
 	if r.json {
 		_ = r.printJSON(map[string]string{"status": "listening", "address": listener.Addr().String(), "public_url": *publicURL})
 	} else {
 		fmt.Fprintln(r.out, "Listening on", listener.Addr())
 	}
-	return relay.Serve(r.ctx, listener, relay.NewHandler(db, relay.Config{PublicURL: strings.TrimRight(*publicURL, "/")}, nil), db)
+	handler := relay.NewHandler(db, relay.Config{PublicURL: strings.TrimRight(*publicURL, "/")}, nil)
+	serveCtx := r.ctx
+	if *localInstance != "" {
+		var cancel context.CancelFunc
+		serveCtx, cancel = context.WithCancel(r.ctx)
+		defer cancel()
+		handler = localserver.ManagementHandler(*localInstance, handler, cancel)
+	}
+	return relay.Serve(serveCtx, listener, handler, db)
+}
+
+func (r runner) local(args []string) error {
+	if len(args) != 1 || args[0] != "stop" {
+		return fmt.Errorf("usage: agentline local stop")
+	}
+	if err := (localserver.Manager{Config: r.deps.Config}).Stop(r.ctx); err != nil {
+		return err
+	}
+	if r.json {
+		return r.printJSON(map[string]string{"status": "stopped"})
+	}
+	fmt.Fprintln(r.out, "Local relay stopped")
+	return nil
 }

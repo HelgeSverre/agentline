@@ -132,6 +132,23 @@ func TestServerStartsAndStopsWithContext(t *testing.T) {
 	}
 }
 
+func TestLocalStopOutputAndInvalidSubcommand(t *testing.T) {
+	root := t.TempDir()
+	code, out, stderr := run(t, root, "local", "stop")
+	if code != 0 || out != "Local relay stopped" || stderr != "" {
+		t.Fatalf("human: code=%d out=%q err=%q", code, out, stderr)
+	}
+	code, out, stderr = run(t, root, "--json", "local", "stop")
+	if code != 0 || out != `{"status":"stopped"}` || stderr != "" {
+		t.Fatalf("json: code=%d out=%q err=%q", code, out, stderr)
+	}
+	for _, args := range [][]string{{"local"}, {"local", "start"}, {"local", "stop", "extra"}} {
+		if code, _, stderr := run(t, root, args...); code == 0 || !strings.Contains(stderr, "usage: agentline local stop") {
+			t.Fatalf("args=%v code=%d err=%q", args, code, stderr)
+		}
+	}
+}
+
 func TestOrdinaryErrorsDoNotPrintCredential(t *testing.T) {
 	root := t.TempDir()
 	secret := "never-print-this"
