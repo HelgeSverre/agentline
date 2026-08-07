@@ -29,7 +29,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		r.json, args = true, args[1:]
 	}
 	if len(args) == 0 {
-		r.fail(fmt.Errorf("usage: agentline [--json] <create|join|send|read|wait|done|status|server|local>"))
+		r.fail(fmt.Errorf("usage: agentline [--json] <create|join|send|read|wait|done|status|mcp|server|local>"))
 		return 2
 	}
 	var err error
@@ -48,6 +48,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		err = r.done(args[1:])
 	case "status":
 		err = r.status(args[1:])
+	case "mcp":
+		err = r.mcp(args[1:])
 	case "server":
 		err = r.server(args[1:])
 	case "local":

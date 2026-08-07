@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/HelgeSverre/agentline/internal/model"
 )
@@ -195,6 +196,54 @@ func TestRoomOperationsRejectInvalidAndTraversalIDs(t *testing.T) {
 				t.Fatalf("RemoveRoom accepted invalid room ID %q", roomID)
 			}
 		})
+	}
+}
+
+func TestAdvanceCursorKeepsMaximumAcrossIndependentStores(t *testing.T) {
+	root := t.TempDir()
+	store := Store{Root: root}
+	want := model.RoomCredential{RoomID: "room", RoomName: "name", ServerURL: "https://relay.example", Token: "secret", Cursor: 1}
+	if err := store.SaveRoom(want); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, sequence := range []int64{10, 5} {
+		sequence := sequence
+		go func() {
+			<-start
+			results <- (Store{Root: root}).AdvanceCursor("room", sequence)
+		}()
+	}
+	close(start)
+	for range 2 {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("cursor advancement timed out")
+		}
+	}
+	got, err := store.LoadRoom("room")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.Cursor = 10
+	if got != want {
+		t.Fatalf("room = %#v, want %#v", got, want)
+	}
+	stale := want
+	stale.Cursor = 3
+	stale.RoomName = "updated"
+	if err := store.SaveRoom(stale); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.LoadRoom("room")
+	if err != nil || got.Cursor != 10 || got.RoomName != "updated" {
+		t.Fatalf("stale SaveRoom regressed cursor or fields: room=%#v error=%v", got, err)
 	}
 }
 

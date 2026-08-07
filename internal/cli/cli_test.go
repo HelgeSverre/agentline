@@ -132,6 +132,14 @@ func TestServerStartsAndStopsWithContext(t *testing.T) {
 	}
 }
 
+func TestMCPRejectsArgumentsWithoutWritingProtocolOutput(t *testing.T) {
+	var out, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"mcp", "extra"}, strings.NewReader(""), &out, &stderr, Dependencies{})
+	if code == 0 || out.Len() != 0 || !strings.Contains(stderr.String(), "usage: agentline mcp") {
+		t.Fatalf("code=%d out=%q err=%q", code, out.String(), stderr.String())
+	}
+}
+
 func TestLocalStopOutputAndInvalidSubcommand(t *testing.T) {
 	root := t.TempDir()
 	code, out, stderr := run(t, root, "local", "stop")

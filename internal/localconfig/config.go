@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/HelgeSverre/agentline/internal/model"
+	"github.com/gofrs/flock"
 )
 
 const DefaultServerURL = "https://agentline.dev"
@@ -68,7 +69,71 @@ func (s Store) SaveRoom(room model.RoomCredential) error {
 	if err := secureDir(root); err != nil {
 		return err
 	}
-	return writeJSON(filepath.Join(root, "rooms", room.RoomID+".json"), room)
+	return s.withRoomLock(root, room.RoomID, func(path string) error {
+		var current model.RoomCredential
+		if err := readJSON(path, &current); err == nil && current.Cursor > room.Cursor {
+			room.Cursor = current.Cursor
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return writeJSON(path, room)
+	})
+}
+
+// AdvanceCursor atomically persists the greatest observed sequence while
+// preserving credential fields written by another process.
+func (s Store) AdvanceCursor(roomID string, sequence int64) error {
+	if !validRoomID(roomID) {
+		return fmt.Errorf("invalid room ID %q", roomID)
+	}
+	root, err := s.root()
+	if err != nil {
+		return err
+	}
+	return s.withRoomLock(root, roomID, func(path string) error {
+		var room model.RoomCredential
+		if err := readJSON(path, &room); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return ErrRoomNotFound
+			}
+			return err
+		}
+		if sequence <= room.Cursor {
+			return nil
+		}
+		room.Cursor = sequence
+		return writeJSON(path, room)
+	})
+}
+
+// Preflight verifies that local credential storage can create and sync a file.
+func (s Store) Preflight() error {
+	root, err := s.root()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(root, "rooms")
+	if err := secureDir(dir); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(dir, ".preflight-*")
+	if err != nil {
+		return fmt.Errorf("preflight local credential storage: %w", err)
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return fmt.Errorf("preflight local credential storage: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return fmt.Errorf("preflight local credential storage: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("preflight local credential storage: %w", err)
+	}
+	return nil
 }
 
 func (s Store) LoadRoom(handle string) (model.RoomCredential, error) {
@@ -141,7 +206,7 @@ func (s Store) RemoveRoom(roomID string) error {
 	if err != nil {
 		return err
 	}
-	err = os.Remove(filepath.Join(root, "rooms", roomID+".json"))
+	err = s.withRoomLock(root, roomID, func(path string) error { return os.Remove(path) })
 	if errors.Is(err, os.ErrNotExist) {
 		return ErrRoomNotFound
 	}
@@ -149,6 +214,19 @@ func (s Store) RemoveRoom(roomID string) error {
 		return fmt.Errorf("remove room: %w", err)
 	}
 	return nil
+}
+
+func (s Store) withRoomLock(root, roomID string, action func(string) error) error {
+	dir := filepath.Join(root, "rooms")
+	if err := secureDir(dir); err != nil {
+		return err
+	}
+	lock := flock.New(filepath.Join(dir, roomID+".lock"))
+	if err := lock.Lock(); err != nil {
+		return fmt.Errorf("lock room: %w", err)
+	}
+	defer lock.Unlock()
+	return action(filepath.Join(dir, roomID+".json"))
 }
 
 func DefaultRoot() (string, error) {

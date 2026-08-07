@@ -13,6 +13,7 @@ import (
 
 	"github.com/HelgeSverre/agentline/internal/client"
 	"github.com/HelgeSverre/agentline/internal/localserver"
+	"github.com/HelgeSverre/agentline/internal/mcpserver"
 	"github.com/HelgeSverre/agentline/internal/model"
 	"github.com/HelgeSverre/agentline/internal/relay"
 	"github.com/HelgeSverre/agentline/internal/store"
@@ -103,6 +104,9 @@ func (r runner) create(args []string) error {
 	if time.Duration(ttl) <= 0 || time.Duration(ttl) > 7*24*time.Hour {
 		return fmt.Errorf("ttl must be greater than zero and at most 7d")
 	}
+	if err := r.deps.Config.Preflight(); err != nil {
+		return err
+	}
 	config, err := r.deps.Config.Load()
 	if err != nil {
 		return err
@@ -146,6 +150,9 @@ func (r runner) join(args []string) error {
 	}
 	if f.NArg() != 1 {
 		return fmt.Errorf("usage: agentline join INVITE [--name NAME]")
+	}
+	if err := r.deps.Config.Preflight(); err != nil {
+		return err
 	}
 	invite := f.Arg(0)
 	token, err := client.InviteToken(invite)
@@ -251,14 +258,14 @@ func (r runner) wait(args []string) error {
 	if err != nil {
 		return err
 	}
-	previousCursor := credential.Cursor
+	sequence := credential.Cursor
 	if result.Message != nil && result.Message.Sequence > credential.Cursor {
-		credential.Cursor = result.Message.Sequence
+		sequence = result.Message.Sequence
 	} else if result.Message == nil && result.Sequence > credential.Cursor {
-		credential.Cursor = result.Sequence
+		sequence = result.Sequence
 	}
-	if credential.Cursor > previousCursor {
-		if err := r.deps.Config.SaveRoom(credential); err != nil {
+	if sequence > credential.Cursor {
+		if err := r.deps.Config.AdvanceCursor(credential.RoomID, sequence); err != nil {
 			return err
 		}
 	}
@@ -289,8 +296,7 @@ func (r runner) done(args []string) error {
 	if err != nil {
 		return err
 	}
-	credential.Cursor = message.Sequence
-	if err := r.deps.Config.SaveRoom(credential); err != nil {
+	if err := r.deps.Config.AdvanceCursor(credential.RoomID, message.Sequence); err != nil {
 		return err
 	}
 	if r.json {
@@ -321,12 +327,20 @@ func (r runner) status(args []string) error {
 }
 
 func (r runner) advance(credential model.RoomCredential, messages []model.Message) error {
+	sequence := credential.Cursor
 	for _, message := range messages {
-		if message.Sequence > credential.Cursor {
-			credential.Cursor = message.Sequence
+		if message.Sequence > sequence {
+			sequence = message.Sequence
 		}
 	}
-	return r.deps.Config.SaveRoom(credential)
+	return r.deps.Config.AdvanceCursor(credential.RoomID, sequence)
+}
+
+func (r runner) mcp(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: agentline mcp")
+	}
+	return mcpserver.Run(r.ctx, mcpserver.Dependencies{Config: r.deps.Config, HTTP: r.deps.HTTP})
 }
 
 func (r runner) server(args []string) error {
