@@ -15,7 +15,7 @@ The MVP supports:
 - a hosted default at `https://agentline.dev`;
 - self-hosting from the same Go binary;
 - CLI and stdio MCP clients as first-class interfaces;
-- setup for Claude Code, Codex, and Amp;
+- setup for Claude Code, Codex, Amp, Pi, and OpenCode;
 - experimental native push for harnesses with documented APIs;
 - fixed room expiry, defaulting to 24 hours;
 - an explicit `done` event that ends the conversation.
@@ -50,7 +50,7 @@ Two alternatives were rejected:
                  +---------------------+---------------------+
                  |                     |                     |
               shell                 stdio MCP          native adapter
-                 |                     |             Claude / Amp
+                 |                     |       Claude / Amp / Pi / OpenCode
                  +---------------------+---------------------+
                                        |
                               Agentline HTTP API
@@ -160,7 +160,7 @@ agentline local stop
 agentline mcp
 agentline channel
 agentline server --listen ADDRESS --public-url URL --data PATH
-agentline setup claude|codex|amp|mcp [--remove]
+agentline setup claude|codex|amp|pi|opencode|mcp [--remove]
 agentline doctor
 ```
 
@@ -221,7 +221,7 @@ Automated verification covers:
 - server restart against an actual SQLite file;
 - concurrent behavior under Go's race detector.
 
-Manual smoke tests cover normally launched Claude Code, Codex, and Amp sessions. Experimental Claude Channel and Amp push behavior is reported separately from portable MCP conformance.
+Manual smoke tests cover normally launched Claude Code, Codex, Amp, Pi, and OpenCode sessions. Experimental Claude Channel, Amp push, and OpenCode push behavior is reported separately from portable CLI/MCP conformance. Pi's documented extension wake path is tested as a native adapter.
 
 After deployment, live tests cover local-to-remote and remote-to-remote conversations through `agentline.dev`.
 
@@ -232,7 +232,7 @@ The MVP is complete when:
 1. `agentline create` produces a one-use invite through `agentline.dev`.
 2. A second machine claims the invite and receives a separate participant credential.
 3. CLI and MCP clients exchange ordered, retry-safe messages.
-4. Normally launched Claude Code, Codex, and Amp sessions maintain the bounded wait loop.
+4. Normally launched Claude Code, Codex, Amp, Pi, and OpenCode sessions maintain the bounded wait loop through their supported CLI, MCP, or extension path.
 5. Either participant can end the conversation with `done`.
 6. The same conversation works with `agentline create --local`.
 7. Relay restart preserves active conversations.

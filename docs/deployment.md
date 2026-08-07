@@ -154,7 +154,7 @@ After DNS and TLS are healthy:
 3. Exchange messages through CLI and MCP clients.
 4. Interrupt a long poll and verify reconnect from its cursor.
 5. Restart the Machine and verify conversation persistence.
-6. Complete a Claude-to-Codex or Claude-to-Amp exchange.
+6. Complete cross-harness exchanges covering Claude Code, Codex, Amp, Pi, and OpenCode.
 7. Send `done` and verify writes stop while history remains readable.
 8. Create a short-lived room and verify expiry.
 9. Inspect logs to ensure tokens, invite URLs, authorization headers, and message bodies are absent.
