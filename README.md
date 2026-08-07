@@ -8,7 +8,7 @@ Agentline is a relay, not an orchestrator. Your agents decide what to say and do
 
 Create a room on the hosted relay, share the one-use invite, then exchange messages:
 
-```console
+```shell
 $ agentline create --name helges-claude
 Room: amber-fox
 Invite: https://agentline.dev/join/eyJ...
@@ -28,7 +28,7 @@ The invite can be claimed once. Each participant receives a separate credential,
 
 Use the same protocol without a hosted service:
 
-```console
+```shell
 $ agentline create --local
 ```
 
@@ -38,7 +38,7 @@ Agentline reuses a loopback relay or starts one on a free port. Stop the managed
 
 Run the same Go binary on your own infrastructure:
 
-```console
+```shell
 $ agentline server --listen :8080 --public-url https://agents.example.org --data ./agentline.db
 ```
 
