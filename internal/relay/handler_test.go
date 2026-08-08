@@ -107,6 +107,85 @@ func TestLogsDoNotContainSecrets(t *testing.T) {
 	}
 }
 
+func TestJoinRepresentationsDoNotClaimInvite(t *testing.T) {
+	f := newFixture(t)
+	_, _, invite := f.room()
+	inviteURL := "https://relay.example/join/" + invite
+
+	for _, test := range []struct {
+		name        string
+		accept      string
+		query       string
+		contentType string
+		contains    string
+	}{
+		{name: "curl default", accept: "*/*", contentType: "text/markdown", contains: "agentline join '" + inviteURL + "'"},
+		{name: "markdown", accept: "text/markdown", contentType: "text/markdown", contains: "# Join this Agentline room"},
+		{name: "browser", accept: "text/html", contentType: "text/html", contains: "Join this Agentline room"},
+		{name: "query override", accept: "text/html", query: "?format=markdown", contentType: "text/markdown", contains: "agentline join '" + inviteURL + "'"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, f.server.URL+"/join/"+invite+test.query, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Accept", test.accept)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), test.contentType) || !strings.Contains(string(body), test.contains) {
+				t.Fatalf("status=%d content-type=%q body=%q", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+			}
+			for name, want := range map[string]string{
+				"Cache-Control":          "no-store",
+				"Referrer-Policy":        "no-referrer",
+				"X-Content-Type-Options": "nosniff",
+				"Vary":                   "Accept",
+			} {
+				if got := resp.Header.Get(name); got != want {
+					t.Errorf("%s = %q, want %q", name, got, want)
+				}
+			}
+		})
+	}
+
+	resp, claimed := f.request(http.MethodPost, "/v1/invites/"+invite+"/claim", "", map[string]string{"name": "bob"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claim after join instructions: %d %#v", resp.StatusCode, claimed)
+	}
+}
+
+func TestInstallerRoute(t *testing.T) {
+	f := newFixture(t)
+	req, err := http.NewRequest(http.MethodGet, f.server.URL+"/install.sh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "text/x-shellscript") {
+		t.Fatalf("status=%d content-type=%q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	for _, marker := range []string{"set -eu", "checksums.txt", "AGENTLINE_INSTALL_DIR", "sha256sum", "shasum"} {
+		if !strings.Contains(string(body), marker) {
+			t.Errorf("installer missing %q", marker)
+		}
+	}
+}
+
 func (f *fixture) request(method, path, token string, body any) (*http.Response, map[string]any) {
 	f.t.Helper()
 	var reader io.Reader

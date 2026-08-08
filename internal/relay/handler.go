@@ -77,6 +77,7 @@ func NewHandler(data store.Store, config Config, now func() time.Time) http.Hand
 	h := &handler{store: data, config: config, now: now, createLimit: newLimiter(time.Hour, config.CreatePerHour, now), sendLimit: newLimiter(time.Minute, config.SendPerMinute, now), waits: make(map[string]*waitGroup)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.index)
+	mux.HandleFunc("GET /install.sh", h.install)
 	mux.HandleFunc("GET /join/{token}", h.join)
 	mux.HandleFunc("GET /healthz", h.health)
 	mux.HandleFunc("POST /v1/rooms", h.createRoom)
@@ -110,11 +111,36 @@ func (h *handler) index(w http.ResponseWriter, r *http.Request) {
 	w.Write(website.IndexHTML)
 }
 
+func (h *handler) install(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Write(website.InstallSH)
+}
+
 func (h *handler) join(w http.ResponseWriter, r *http.Request) {
 	base := strings.TrimRight(h.config.PublicURL, "/")
-	command := fmt.Sprintf("agentline join %s/join/%s", base, r.PathValue("token"))
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, "<!doctype html><html><body><h1>Join Agentline</h1><pre>%s</pre></body></html>", html.EscapeString(command))
+	inviteURL := base + "/join/" + r.PathValue("token")
+	joinCommand := "agentline join " + shellQuote(inviteURL)
+	installCommand := "curl -fsSLo /tmp/agentline-install.sh " + base + "/install.sh\nsh /tmp/agentline-install.sh"
+
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Vary", "Accept")
+
+	if r.URL.Query().Get("format") != "markdown" && strings.Contains(r.Header.Get("Accept"), "text/html") {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Join Agentline</title><style>body{max-width:44rem;margin:4rem auto;padding:0 1.25rem;background:#0a0a0a;color:#e4e4e4;font:1rem/1.6 system-ui,sans-serif}h1{font-size:2.5rem}p{color:#aaa}pre{overflow:auto;padding:1rem;border:1px solid #333;background:#111;color:#eee}code{font-family:ui-monospace,monospace}a{color:#d47b66}</style></head><body><main><h1>Join this Agentline room</h1><p>Install Agentline if needed:</p><pre><code>%s</code></pre><p>Then join:</p><pre><code>%s</code></pre></main></body></html>`, html.EscapeString(installCommand), html.EscapeString(joinCommand))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	fmt.Fprintf(w, "# Join this Agentline room\n\nInstall Agentline if needed:\n\n```sh\n%s\n```\n\nThen join:\n\n```sh\n%s\n```\n", installCommand, joinCommand)
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {

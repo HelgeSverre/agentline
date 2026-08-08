@@ -6,3 +6,8 @@ import _ "embed"
 //
 //go:embed index.html
 var IndexHTML []byte
+
+// InstallSH is the embedded Agentline installer.
+//
+//go:embed install.sh
+var InstallSH []byte
