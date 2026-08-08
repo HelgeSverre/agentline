@@ -47,6 +47,10 @@ func TestLifecyclePersistsCredentialsAndCursor(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("send: %s", stderr)
 	}
+	aliceCredential, err := (localconfig.Store{Root: rootA}).LoadRoom("team")
+	if err != nil || aliceCredential.Cursor != 1 {
+		t.Fatalf("sender cursor=%d err=%v", aliceCredential.Cursor, err)
+	}
 	code, out, stderr = run(t, rootB, "--json", "read", "team")
 	if code != 0 || !strings.Contains(out, `"body":"hello"`) {
 		t.Fatalf("read out=%s err=%s", out, stderr)

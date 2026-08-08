@@ -206,6 +206,9 @@ func (r runner) send(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := r.deps.Config.AdvanceCursor(credential.RoomID, message.Sequence); err != nil {
+		return err
+	}
 	if r.json {
 		return r.printJSON(message)
 	}
