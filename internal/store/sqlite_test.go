@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,9 +36,11 @@ func openTestStore(t *testing.T) (Store, *testClock, string) {
 	return s, clock, path
 }
 
+func intPtr(n int) *int { return &n }
+
 func createAndClaim(t *testing.T, s Store) (CreatedRoom, ClaimResult) {
 	t.Helper()
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour, MaxParticipants: 2})
+	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +53,7 @@ func createAndClaim(t *testing.T, s Store) (CreatedRoom, ClaimResult) {
 
 func TestCreateRoomUsesFixedExpiryAndStoresOnlyHashes(t *testing.T) {
 	s, clock, path := openTestStore(t)
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "alpha", CreatorName: "alice", TTL: 2 * time.Hour, MaxParticipants: 2})
+	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "alpha", CreatorName: "alice", TTL: 2 * time.Hour, MaxParticipants: intPtr(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +109,38 @@ func TestInspectReadsPersistedTranscriptUntilExpiry(t *testing.T) {
 	}
 }
 
-func TestCreateRoomRejectsMoreThanTwoParticipantsInGoAndSchema(t *testing.T) {
+func TestCreateRoomSupportsUnlimitedAndPositiveCapacity(t *testing.T) {
 	s, _, path := openTestStore(t)
-	if _, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "crowd", CreatorName: "alice", TTL: time.Hour, MaxParticipants: 3}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("create room with 3 participants: %v", err)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		max  *int
+		want any
+		err  error
+	}{
+		{name: "unlimited", want: nil},
+		{name: "capped", max: intPtr(3), want: int64(3)},
+		{name: "zero", max: intPtr(0), err: ErrInvalid},
+		{name: "negative", max: intPtr(-1), err: ErrInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			created, err := s.CreateRoom(ctx, CreateRoomParams{Name: tc.name, CreatorName: "alice", TTL: time.Hour, MaxParticipants: tc.max})
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("CreateRoom() error = %v, want %v", err, tc.err)
+			}
+			if tc.err != nil {
+				return
+			}
+			if created.Room.MaxParticipants == nil != (tc.want == nil) {
+				t.Fatalf("room capacity = %v, want %v", created.Room.MaxParticipants, tc.want)
+			}
+			if tc.want == nil {
+				encoded, err := json.Marshal(created.Room)
+				if err != nil || !strings.Contains(string(encoded), `"max_participants":null`) {
+					t.Fatalf("room JSON = %s, err = %v", encoded, err)
+				}
+			}
+		})
 	}
 
 	db, err := sql.Open("sqlite", path)
@@ -115,15 +148,69 @@ func TestCreateRoomRejectsMoreThanTwoParticipantsInGoAndSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(`INSERT INTO rooms(id,public_name,max_participants,status,created_at,expires_at) VALUES('invalid','crowd',3,'waiting_for_peer',0,1)`)
-	if err == nil {
-		t.Fatal("schema accepted max_participants=3")
+	var unlimited sql.NullInt64
+	if err := db.QueryRow(`SELECT max_participants FROM rooms WHERE public_name='unlimited'`).Scan(&unlimited); err != nil || unlimited.Valid {
+		t.Fatalf("unlimited capacity = %v, err = %v", unlimited, err)
+	}
+	var capped int
+	if err := db.QueryRow(`SELECT max_participants FROM rooms WHERE public_name='capped'`).Scan(&capped); err != nil || capped != 3 {
+		t.Fatalf("capped capacity = %d, err = %v", capped, err)
+	}
+	if _, err := db.Exec(`INSERT INTO rooms(id,public_name,max_participants,status,created_at,expires_at) VALUES('large','crowd',1000000,'waiting_for_peer',0,1)`); err != nil {
+		t.Fatalf("schema rejected large positive capacity: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO rooms(id,public_name,max_participants,status,created_at,expires_at) VALUES('zero','crowd',0,'waiting_for_peer',0,1)`); err == nil {
+		t.Fatal("schema accepted zero capacity")
+	}
+}
+
+func TestSchemaIsCleanMultiParticipantCutoff(t *testing.T) {
+	_, _, path := openTestStore(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	columns := func(table string) map[string]bool {
+		rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		got := map[string]bool{}
+		for rows.Next() {
+			var cid, notNull, primaryKey int
+			var name, dataType string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+				t.Fatal(err)
+			}
+			got[name] = notNull != 0
+		}
+		return got
+	}
+
+	invites := columns("invites")
+	if _, ok := invites["claimed_at"]; ok {
+		t.Fatal("invites retains claimed_at")
+	}
+	if _, ok := invites["claimed_by"]; ok {
+		t.Fatal("invites retains claimed_by")
+	}
+	messages := columns("messages")
+	if notNull, ok := messages["recipient_id"]; !ok || notNull {
+		t.Fatalf("messages.recipient_id exists=%v not_null=%v", ok, notNull)
+	}
+	rooms := columns("rooms")
+	if rooms["max_participants"] {
+		t.Fatal("rooms.max_participants is not nullable")
 	}
 }
 
 func TestInviteClaimIsAtomicOneUseAndCredentialsAuthenticate(t *testing.T) {
 	s, _, _ := openTestStore(t)
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "alpha", CreatorName: "alice", TTL: time.Hour, MaxParticipants: 2})
+	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "alpha", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,20 +229,20 @@ func TestInviteClaimIsAtomicOneUseAndCredentialsAuthenticate(t *testing.T) {
 	}
 	close(start)
 	var winner ClaimResult
-	success, consumed := 0, 0
+	success, full := 0, 0
 	for range 2 {
 		result := <-results
 		if result.err == nil {
 			success++
 			winner = result.claim
-		} else if errors.Is(result.err, ErrInviteClaimed) {
-			consumed++
+		} else if errors.Is(result.err, ErrRoomFull) {
+			full++
 		} else {
 			t.Fatalf("claim error: %v", result.err)
 		}
 	}
-	if success != 1 || consumed != 1 {
-		t.Fatalf("success=%d consumed=%d", success, consumed)
+	if success != 1 || full != 1 {
+		t.Fatalf("success=%d full=%d", success, full)
 	}
 	if winner.ParticipantToken == created.CreatorToken {
 		t.Fatal("participants share credential")
@@ -178,7 +265,7 @@ func TestInviteClaimIsAtomicOneUseAndCredentialsAuthenticate(t *testing.T) {
 func TestCapacityAndFixedExpiry(t *testing.T) {
 	s, clock, _ := openTestStore(t)
 	created, claimed := createAndClaim(t, s)
-	if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "third"); !errors.Is(err, ErrInviteClaimed) {
+	if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "third"); !errors.Is(err, ErrRoomFull) {
 		t.Fatalf("second claim: %v", err)
 	}
 	clock.add(30 * time.Minute)
@@ -186,20 +273,166 @@ func TestCapacityAndFixedExpiry(t *testing.T) {
 	if err != nil || !room.ExpiresAt.Equal(created.Room.ExpiresAt) {
 		t.Fatalf("expiry changed: %+v %v", room, err)
 	}
-	if claimed.Room.MaxParticipants != 2 {
+	if claimed.Room.MaxParticipants == nil || *claimed.Room.MaxParticipants != 2 {
 		t.Fatal("capacity changed")
 	}
 }
 
 func TestInviteClaimRejectsRoomAtCapacity(t *testing.T) {
 	s, _, _ := openTestStore(t)
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "solo", CreatorName: "alice", TTL: time.Hour, MaxParticipants: 1})
+	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "solo", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "bob"); !errors.Is(err, ErrRoomFull) {
 		t.Fatalf("claim full room: %v", err)
 	}
+}
+
+func TestReusableInviteCreatesDistinctParticipants(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.ClaimInvite(ctx, created.InviteToken, "guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.ClaimInvite(ctx, created.InviteToken, "guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Participant.ID == second.Participant.ID || first.ParticipantToken == second.ParticipantToken {
+		t.Fatalf("reused identity or token: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestParticipantsListsRoomMembersDirectly(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimInvite(ctx, created.InviteToken, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	participants, err := s.Participants(ctx, created.Room.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []model.Participant{created.Creator, claimed.Participant}
+	slices.SortFunc(want, func(a, b model.Participant) int {
+		if joined := a.JoinedAt.Compare(b.JoinedAt); joined != 0 {
+			return joined
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	if len(participants) != len(want) {
+		t.Fatalf("participants=%+v", participants)
+	}
+	for i := range want {
+		if participants[i] != want[i] {
+			t.Fatalf("participant[%d]=%+v, want %+v", i, participants[i], want[i])
+		}
+	}
+}
+
+func TestUnlimitedRoomAcceptsSeveralParticipants(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if _, err := s.ClaimInvite(ctx, created.InviteToken, "guest"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	participants, err := s.Participants(ctx, created.Room.ID)
+	if err != nil || len(participants) != 6 {
+		t.Fatalf("participants=%+v err=%v", participants, err)
+	}
+}
+
+func TestConcurrentClaimsStopExactlyAtCapacity(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 8)
+	for range 8 {
+		go func() {
+			<-start
+			_, err := s.ClaimInvite(ctx, created.InviteToken, "guest")
+			results <- err
+		}()
+	}
+	close(start)
+	successes, full := 0, 0
+	for range 8 {
+		switch err := <-results; {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrRoomFull):
+			full++
+		default:
+			t.Fatalf("claim error: %v", err)
+		}
+	}
+	if successes != 2 || full != 6 {
+		t.Fatalf("successes=%d full=%d", successes, full)
+	}
+	participants, err := s.Participants(ctx, created.Room.ID)
+	if err != nil || len(participants) != 3 {
+		t.Fatalf("participants=%+v err=%v", participants, err)
+	}
+}
+
+func TestReusableInviteRejectsFullExpiredAndCompletedRooms(t *testing.T) {
+	t.Run("full", func(t *testing.T) {
+		s, _, _ := openTestStore(t)
+		created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "guest"); !errors.Is(err, ErrRoomFull) {
+			t.Fatalf("claim error=%v", err)
+		}
+	})
+	t.Run("expired", func(t *testing.T) {
+		s, clock, _ := openTestStore(t)
+		created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.add(time.Hour)
+		if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "guest"); !errors.Is(err, ErrRoomExpired) {
+			t.Fatalf("claim error=%v", err)
+		}
+	})
+	t.Run("completed", func(t *testing.T) {
+		s, _, _ := openTestStore(t)
+		ctx := context.Background()
+		created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CloseRoom(ctx, created.Room.ID, created.Creator.ID, "done"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimInvite(ctx, created.InviteToken, "guest"); !errors.Is(err, ErrRoomClosed) {
+			t.Fatalf("claim error=%v", err)
+		}
+	})
 }
 
 func TestAppendOrderingIdempotencyLimitAndDoneHistory(t *testing.T) {
@@ -231,12 +464,256 @@ func TestAppendOrderingIdempotencyLimitAndDoneHistory(t *testing.T) {
 	if _, err := s.Append(ctx, AppendParams{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "late", Body: "late", Kind: "message"}); !errors.Is(err, ErrRoomClosed) {
 		t.Fatalf("late append: %v", err)
 	}
-	messages, err := s.MessagesAfter(ctx, created.Room.ID, 997, 20)
+	visible, err := s.MessagesAfter(ctx, created.Room.ID, created.Creator.ID, 997, 20, false)
+	messages := visible.Messages
 	if err != nil || len(messages) != 3 || messages[0].Sequence != 998 || messages[2].Kind != "done" {
 		t.Fatalf("messages=%+v err=%v", messages, err)
 	}
 	if _, err := s.CloseRoom(ctx, created.Room.ID, claimed.Participant.ID, "another"); !errors.Is(err, ErrRoomClosed) {
 		t.Fatalf("second done: %v", err)
+	}
+}
+
+func TestAppendBroadcastAndPrivateRecipient(t *testing.T) {
+	s, _, path := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := s.ClaimInvite(ctx, created.InviteToken, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimInvite(ctx, created.InviteToken, "carol"); err != nil {
+		t.Fatal(err)
+	}
+
+	broadcast, err := s.Append(ctx, AppendParams{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "broadcast", Body: "hello", Kind: "message"})
+	if err != nil || broadcast.To != "" {
+		t.Fatalf("broadcast=%+v err=%v", broadcast, err)
+	}
+	private, err := s.Append(ctx, AppendParams{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "private", To: bob.Participant.ID, Body: "secret", Kind: "message"})
+	if err != nil || private.To != bob.Participant.ID {
+		t.Fatalf("private=%+v err=%v", private, err)
+	}
+	visible, err := s.MessagesAfter(ctx, created.Room.ID, created.Creator.ID, 0, 10, false)
+	messages := visible.Messages
+	if err != nil || len(messages) != 2 || messages[0].To != "" || messages[1].To != bob.Participant.ID {
+		t.Fatalf("messages=%+v err=%v", messages, err)
+	}
+	if _, err := s.CloseRoom(ctx, created.Room.ID, created.Creator.ID, "done"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, id := range []string{"broadcast", "done"} {
+		var recipient sql.NullString
+		if err := db.QueryRow(`SELECT recipient_id FROM messages WHERE id=?`, id).Scan(&recipient); err != nil || recipient.Valid {
+			t.Fatalf("recipient for %q=%v err=%v", id, recipient, err)
+		}
+	}
+}
+
+func TestMessagesAfterReturnsOnlyParticipantVisibleHistory(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	created, bob, carol := appendVisibilityMatrix(t, s)
+
+	for _, tc := range []struct {
+		name          string
+		participantID string
+		want          []string
+	}{
+		{name: "alice", participantID: created.Creator.ID, want: []string{"1", "2", "3", "5", "6", "7"}},
+		{name: "bob", participantID: bob.Participant.ID, want: []string{"1", "2", "3", "4", "5", "6", "7"}},
+		{name: "carol", participantID: carol.Participant.ID, want: []string{"1", "4", "5", "6", "7"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			visible, err := s.MessagesAfter(context.Background(), created.Room.ID, tc.participantID, 0, 10, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := messageIDs(visible.Messages); !slices.Equal(got, tc.want) {
+				t.Fatalf("message IDs = %v, want %v", got, tc.want)
+			}
+			if visible.Cursor != 7 {
+				t.Fatalf("cursor = %d, want 7", visible.Cursor)
+			}
+		})
+	}
+}
+
+func TestMessagesAfterRejectsUnknownAndCrossRoomParticipant(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	first, err := s.CreateRoom(ctx, CreateRoomParams{Name: "first", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateRoom(ctx, CreateRoomParams{Name: "second", CreatorName: "mallory", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, participantID := range []string{"unknown", second.Creator.ID} {
+		if _, err := s.MessagesAfter(ctx, first.Room.ID, participantID, 0, 10, false); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("participant %q: %v", participantID, err)
+		}
+	}
+}
+
+func TestWaitScanSkipsSelfAndInvisibleEventsWhileAdvancingCursor(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	created, _, carol := appendVisibilityMatrix(t, s)
+	ctx := context.Background()
+
+	alice, err := s.MessagesAfter(ctx, created.Room.ID, created.Creator.ID, 0, 1, true)
+	if err != nil || !slices.Equal(messageIDs(alice.Messages), []string{"3"}) || alice.Cursor < 3 {
+		t.Fatalf("alice scan = %+v, err = %v", alice, err)
+	}
+
+	first, err := s.MessagesAfter(ctx, created.Room.ID, carol.Participant.ID, 0, 1, true)
+	if err != nil || !slices.Equal(messageIDs(first.Messages), []string{"1"}) || first.Cursor != 1 {
+		t.Fatalf("carol first scan = %+v, err = %v", first, err)
+	}
+	second, err := s.MessagesAfter(ctx, created.Room.ID, carol.Participant.ID, first.Cursor, 1, true)
+	if err != nil || !slices.Equal(messageIDs(second.Messages), []string{"6"}) || second.Cursor != 6 {
+		t.Fatalf("carol second scan = %+v, err = %v", second, err)
+	}
+
+	onlySkipped, err := s.MessagesAfter(ctx, created.Room.ID, carol.Participant.ID, 1, 10, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := messageIDs(onlySkipped.Messages); !slices.Equal(got, []string{"6", "7"}) {
+		t.Fatalf("message IDs = %v", got)
+	}
+	if onlySkipped.Cursor != 7 {
+		t.Fatalf("cursor = %d, want 7", onlySkipped.Cursor)
+	}
+
+	isolated, err := s.CreateRoom(ctx, CreateRoomParams{Name: "isolated", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolatedBob, err := s.ClaimInvite(ctx, isolated.InviteToken, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolatedCarol, err := s.ClaimInvite(ctx, isolated.InviteToken, "carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []AppendParams{
+		{RoomID: isolated.Room.ID, ParticipantID: isolated.Creator.ID, MessageID: "hidden", To: isolatedBob.Participant.ID, Body: "hidden", Kind: "message"},
+		{RoomID: isolated.Room.ID, ParticipantID: isolatedCarol.Participant.ID, MessageID: "self", Body: "self", Kind: "message"},
+	} {
+		if _, err := s.Append(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	empty, err := s.MessagesAfter(ctx, isolated.Room.ID, isolatedCarol.Participant.ID, 0, 1, true)
+	if err != nil || len(empty.Messages) != 0 || empty.Cursor != 2 {
+		t.Fatalf("empty scan = %+v, err = %v", empty, err)
+	}
+}
+
+func TestDoneIsVisibleAndNeverSelfFiltered(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	created, bob, _ := appendVisibilityMatrix(t, s)
+
+	visible, err := s.MessagesAfter(context.Background(), created.Room.ID, bob.Participant.ID, 6, 1, true)
+	if err != nil || !slices.Equal(messageIDs(visible.Messages), []string{"7"}) || visible.Cursor != 7 {
+		t.Fatalf("done scan = %+v, err = %v", visible, err)
+	}
+}
+
+func appendVisibilityMatrix(t *testing.T, s Store) (CreatedRoom, ClaimResult, ClaimResult) {
+	t.Helper()
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := s.ClaimInvite(ctx, created.InviteToken, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	carol, err := s.ClaimInvite(ctx, created.InviteToken, "carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []AppendParams{
+		{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "1", Body: "alice broadcast", Kind: "message"},
+		{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "2", To: bob.Participant.ID, Body: "alice to bob", Kind: "message"},
+		{RoomID: created.Room.ID, ParticipantID: bob.Participant.ID, MessageID: "3", To: created.Creator.ID, Body: "bob to alice", Kind: "message"},
+		{RoomID: created.Room.ID, ParticipantID: carol.Participant.ID, MessageID: "4", To: bob.Participant.ID, Body: "carol to bob", Kind: "message"},
+		{RoomID: created.Room.ID, ParticipantID: carol.Participant.ID, MessageID: "5", Body: "carol broadcast", Kind: "message"},
+		{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "6", Body: "alice broadcast", Kind: "message"},
+	} {
+		if _, err := s.Append(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.CloseRoom(ctx, created.Room.ID, bob.Participant.ID, "7"); err != nil {
+		t.Fatal(err)
+	}
+	return created, bob, carol
+}
+
+func messageIDs(messages []model.Message) []string {
+	ids := make([]string, len(messages))
+	for i, message := range messages {
+		ids[i] = message.ID
+	}
+	return ids
+}
+
+func TestAppendRejectsUnknownAndCrossRoomRecipient(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	first, err := s.CreateRoom(ctx, CreateRoomParams{Name: "first", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateRoom(ctx, CreateRoomParams{Name: "second", CreatorName: "mallory", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, recipient := range []string{"unknown", second.Creator.ID} {
+		if _, err := s.Append(ctx, AppendParams{RoomID: first.Room.ID, ParticipantID: first.Creator.ID, MessageID: "rejected-" + recipient, To: recipient, Body: "secret", Kind: "message"}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("recipient %q: %v", recipient, err)
+		}
+	}
+	accepted, err := s.Append(ctx, AppendParams{RoomID: first.Room.ID, ParticipantID: first.Creator.ID, MessageID: "accepted", Body: "hello", Kind: "message"})
+	if err != nil || accepted.Sequence != 1 {
+		t.Fatalf("accepted=%+v err=%v", accepted, err)
+	}
+	visible, err := s.MessagesAfter(ctx, first.Room.ID, first.Creator.ID, 0, 10, false)
+	messages := visible.Messages
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("messages=%+v err=%v", messages, err)
+	}
+}
+
+func TestAppendIdempotencyIncludesRecipient(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	created, claimed := createAndClaim(t, s)
+	ctx := context.Background()
+	p := AppendParams{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "private", To: claimed.Participant.ID, Body: "secret", Kind: "message"}
+	first, err := s.Append(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry, err := s.Append(ctx, p); err != nil || retry != first {
+		t.Fatalf("retry=%+v err=%v", retry, err)
+	}
+	p.To = ""
+	if _, err := s.Append(ctx, p); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed recipient: %v", err)
 	}
 }
 
@@ -262,7 +739,8 @@ func TestMessageIDReuseAcrossAppendAndCloseConflictsWithoutWrongTransition(t *te
 	if _, err := s.Append(ctx, AppendParams{RoomID: created.Room.ID, ParticipantID: claimed.Participant.ID, MessageID: "done", Kind: "message"}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("append with done message ID: %v", err)
 	}
-	messages, err := s.MessagesAfter(ctx, created.Room.ID, 0, 10)
+	visible, err := s.MessagesAfter(ctx, created.Room.ID, created.Creator.ID, 0, 10, false)
+	messages := visible.Messages
 	if err != nil || len(messages) != 2 || messages[1].Kind != "done" {
 		t.Fatalf("history after done ID reuse: messages=%+v err=%v", messages, err)
 	}
@@ -373,7 +851,7 @@ func TestLazyExpiryAndDeleteExpired(t *testing.T) {
 	if _, err := s.Authenticate(context.Background(), created.Room.ID, created.CreatorToken); !errors.Is(err, ErrRoomExpired) {
 		t.Fatalf("auth expired: %v", err)
 	}
-	if _, err := s.MessagesAfter(context.Background(), created.Room.ID, 0, 10); !errors.Is(err, ErrRoomExpired) {
+	if _, err := s.MessagesAfter(context.Background(), created.Room.ID, created.Creator.ID, 0, 10, false); !errors.Is(err, ErrRoomExpired) {
 		t.Fatalf("history expired: %v", err)
 	}
 	deleted, err := s.DeleteExpired(context.Background(), clock.now())

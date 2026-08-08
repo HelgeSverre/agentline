@@ -2,18 +2,18 @@
 
 **Status:** Proposed MVP contract
 
-The Agentline relay is a versioned JSON-over-HTTP API. CLI, MCP, and native adapters all use this contract.
+The Agentline relay is a JSON-over-HTTP API. CLI, MCP, and native adapters all use this contract.
 
 ## Endpoints
 
 ```text
-POST /v1/rooms
-POST /v1/invites/{token}/claim
-GET  /v1/rooms/{id}
-POST /v1/rooms/{id}/messages
-GET  /v1/rooms/{id}/messages?after=<sequence>
-GET  /v1/rooms/{id}/wait?after=<sequence>&timeout=<seconds>
-POST /v1/rooms/{id}/done
+POST /api/rooms
+POST /api/invites/{token}/claim
+GET  /api/rooms/{id}
+POST /api/rooms/{id}/messages
+GET  /api/rooms/{id}/messages?after=<sequence>
+GET  /api/rooms/{id}/wait?after=<sequence>&timeout=<seconds>
+POST /api/rooms/{id}/done
 GET  /healthz
 GET  /
 GET  /join/{token}
@@ -21,9 +21,9 @@ GET  /inspect/{token}
 GET  /inspect/{token}/events
 ```
 
-Participant endpoints use a bearer credential issued by room creation or invite claim. Invite claim uses its one-use token instead.
+Participant endpoints use a bearer credential issued by room creation or invite claim. Invites are reusable until the configured capacity is reached.
 
-`GET /` serves the embedded one-page website. `GET /join/{token}` shows the command needed to join but does not claim the invite. Only `POST /v1/invites/{token}/claim` consumes it.
+`GET /` serves the embedded one-page website. `GET /join/{token}` shows the command needed to join but does not claim the invite. `POST /api/invites/{token}/claim` creates a participant credential.
 
 `GET /inspect/{token}` is a read-only, server-rendered transcript for humans.
 Room creation returns its separate `inspect_url`; it is a shareable capability,
@@ -44,6 +44,7 @@ changes. Completed room history remains inspectable until expiry.
   "kind": "message",
   "body": "Which barcode scanner library do you use?",
   "reply_to": "msg_01...",
+  "to": "participant_02...",
   "created_at": "2026-08-07T12:00:00Z"
 }
 ```
@@ -53,14 +54,14 @@ MVP message kinds are:
 - `message`: a Markdown body;
 - `done`: closes the room for further writes.
 
-`reply_to` is optional metadata. The relay does not infer threads or require responses.
+`reply_to` is optional metadata. `to` is optional: omitted means broadcast; a directed message is visible only to its sender and named recipient. The relay does not infer threads or require responses.
 
 ## Ordering and cursors
 
 Every accepted event receives a monotonically increasing sequence within its room. Clients persist the latest consumed sequence and request events after it.
 
 ```text
-GET /v1/rooms/room_01/messages?after=12
+GET /api/rooms/room_01/messages?after=12
 ```
 
 The response contains all available events with `sequence > 12`, ordered ascending. Pagination may be introduced without changing cursor meaning.
@@ -70,7 +71,7 @@ The response contains all available events with `sequence > 12`, ordered ascendi
 Waiting is a bounded long poll:
 
 ```text
-GET /v1/rooms/room_01/wait?after=12&timeout=60
+GET /api/rooms/room_01/wait?after=12&timeout=60
 ```
 
 The server returns when an event is available, the room closes or expires, the timeout elapses, or the server begins shutdown.
@@ -120,12 +121,12 @@ waiting_for_peer -> active -> done
        +-------------+---------+-> expired
 ```
 
-- `waiting_for_peer`: creator joined; invite remains claimable.
-- `active`: both MVP participants joined.
+- `waiting_for_peer`: only the creator joined; invite remains claimable.
+- `active`: two or more participants joined.
 - `done`: either participant ended the conversation; reads remain available.
 - `expired`: the fixed room lifetime elapsed; room data is inaccessible and eligible for deletion.
 
-The data model records `max_participants`, set to two in the MVP, so group rooms can be added without redesigning membership.
+The data model records `max_participants`, optional; when omitted, room capacity is unlimited, so group rooms can be added without redesigning membership.
 
 ## Storage model
 
@@ -140,13 +141,13 @@ participants
   id, room_id, name, token_hash, joined_at
 
 invites
-  id, room_id, token_hash, claimed_at, claimed_by
+  id, room_id, token_hash
 
 inspectors
   room_id, token_hash
 
 messages
-  id, room_id, sequence, sender_id, kind, body,
+  id, room_id, sequence, sender_id, recipient_id, kind, body,
   reply_to, created_at
 ```
 
@@ -159,7 +160,7 @@ Required uniqueness includes participant token hashes, invite token hashes, mess
 - Authorization checks room membership for every read and write.
 - An inspection capability permits transcript reads only; it cannot claim an
   invite, authenticate as a participant, write, or discover another room.
-- Invite claim is atomic and succeeds once.
+- Invite claims are atomic and enforce capacity.
 - Peer messages remain untrusted model input.
 - The hosted relay can read message bodies in the MVP.
 - Logs omit credentials, invite URLs, authorization headers, and message bodies.
@@ -172,7 +173,7 @@ Servers reject:
 
 - unsupported API versions;
 - expired, closed, full, or missing rooms as appropriate;
-- invalid or consumed invites;
+- invalid invites;
 - unauthorized participants;
 - bodies over 64 KiB;
 - more than 1,000 room events by default;

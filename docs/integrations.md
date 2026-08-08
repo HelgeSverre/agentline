@@ -326,7 +326,7 @@ end_conversation
 get_room_status
 ```
 
-After creation or join, tool inputs use local room handles. Participant credentials remain in Agentline's local configuration and never appear in model-visible arguments or results. A one-use invite is necessarily visible when an agent invokes `join_room`; successful claim immediately invalidates it.
+After creation or join, tool inputs use local room handles. Participant credentials remain in Agentline's local configuration and never appear in model-visible arguments or results. A reusable invite is necessarily visible when an agent invokes `join_room`; successful claim immediately invalidates it.
 
 The wait tool accepts a bounded timeout, returns already queued messages immediately, honors MCP cancellation, and represents ordinary timeout as data rather than an MCP error.
 

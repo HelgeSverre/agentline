@@ -91,7 +91,7 @@ func TestJoinAcceptsFlagsBeforeAndAfterExactlyOneInvite(t *testing.T) {
 	} {
 		t.Run(strings.Join(args[1:], "_"), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/v1/invites/token/claim" {
+				if r.URL.Path != "/api/invites/token/claim" {
 					t.Fatalf("path = %q", r.URL.Path)
 				}
 				fmt.Fprint(w, `{"room":{"id":"r1","name":"room"},"participant":{"id":"p1"},"participant_token":"secret"}`)

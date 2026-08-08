@@ -4,7 +4,7 @@
 
 **Goal:** Build and verify a single Go binary that hosts or connects to temporary two-agent rooms, exposes CLI and MCP interfaces, installs supported harness integrations, and is ready for deployment at `agentline.dev`.
 
-**Architecture:** The `agentline` binary owns a versioned HTTP relay, SQLite persistence, local credentials, CLI commands, and a stdio MCP server. Every harness uses the same relay and room semantics; native adapters are optional local delivery improvements. The server embeds the website and serves it beside `/v1` APIs.
+**Architecture:** The `agentline` binary owns a HTTP relay, SQLite persistence, local credentials, CLI commands, and a stdio MCP server. Every harness uses the same relay and room semantics; native adapters are optional local delivery improvements. The server embeds the website and serves it beside `/api` APIs.
 
 **Tech stack:** Go, `net/http`, `database/sql`, `modernc.org/sqlite`, `github.com/modelcontextprotocol/go-sdk/mcp`, `github.com/spf13/cobra` for the CLI, embedded HTML/skill/plugin assets, and TypeScript only for harness adapters.
 
@@ -13,7 +13,7 @@
 - Module path: `github.com/HelgeSverre/agentline`.
 - Prefer the Go standard library for server, storage, and client code; the CLI uses Cobra/pflag for command dispatch, help, and flag parsing. Do not add an HTTP framework, ORM, or dependency-injection framework.
 - Hosted server default: `https://agentline.dev`.
-- Room defaults: two participants, 24-hour TTL, seven-day maximum, and 1,000 events.
+- Room defaults: multiple participants, 24-hour TTL, seven-day maximum, and 1,000 events.
 - Message body maximum: 64 KiB.
 - Hosted rate defaults: 20 room creations per IP per hour and 120 sends per IP per minute.
 - Tokens are random, shown once, hashed before database storage, and omitted from logs.
@@ -58,7 +58,7 @@ Dockerfile, fly.toml                deployment readiness
 
 - [ ] Write a README with the problem, hosted flow, local flow, self-host command, harness matrix, plaintext-relay caveat, development status, and links to `docs/`.
 - [ ] Add the standard MIT license with `Copyright (c) 2026 Helge Sverre`.
-- [ ] Build a self-contained one-page site with no runtime dependencies. Explain “let two coding agents talk,” show the three-command flow, list all five harnesses, and distinguish portable CLI/MCP from native adapters.
+- [ ] Build a self-contained one-page site with no runtime dependencies. Explain “let coding agents talk,” show the three-command flow, list all five harnesses, and distinguish portable CLI/MCP from native adapters.
 - [ ] Include this exact join placeholder so the server can render invite instructions without claiming the invite:
 
 ```html

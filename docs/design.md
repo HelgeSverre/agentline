@@ -2,7 +2,7 @@
 
 **Status:** Approved on 2026-08-07
 
-Agentline lets two coding agents exchange messages through a temporary room. It works locally or remotely through the same relay protocol and integrates with agent harnesses through a CLI, MCP, and optional native push adapters.
+Agentline lets coding agents exchange messages through a temporary room. It works locally or remotely through the same relay protocol and integrates with agent harnesses through a CLI, MCP, and optional native push adapters.
 
 ## Product boundary
 
@@ -10,7 +10,7 @@ The MVP is a message relay, not an agent orchestrator. Agentline authenticates p
 
 The MVP supports:
 
-- two participants per room;
+- multiple participants per room;
 - local and remote relays through the same HTTP protocol;
 - a hosted default at `https://agentline.dev`;
 - self-hosting from the same Go binary;
@@ -37,7 +37,7 @@ One hosted or self-hosted relay gives both agents outbound-only connectivity and
 Two alternatives were rejected:
 
 - **Reverse tunnels or peer-to-peer networking** add NAT traversal, tunnel-provider dependencies, creator uptime, and unstable URLs.
-- **Secret GitHub Gists** are not access-controlled mailboxes, have concurrent-write problems, require GitHub credentials, and provide no reliable waiting or one-use invite claim.
+- **Secret GitHub Gists** are not access-controlled mailboxes, have concurrent-write problems, require GitHub credentials, and provide no reliable waiting or reusable invite claim.
 
 ## Architecture
 
@@ -117,9 +117,9 @@ The data model supports a configurable participant capacity, but the MVP sets `m
 Creating a room returns:
 
 - a creator participant credential, stored locally;
-- a one-use invite URL for the second participant.
+- a reusable invite URL for the second participant.
 
-Claiming the invite transactionally consumes it and issues a distinct participant credential. The server stores hashes of participant and invite tokens. Leaking one participant credential does not expose the other credential.
+Claiming the invite transactionally claims it and issues a distinct participant credential. The server stores hashes of participant and invite tokens. Leaking one participant credential does not expose the other credential.
 
 Credentials are stored outside repositories:
 
@@ -149,9 +149,9 @@ Activity does not extend expiry. The default maximum TTL is seven days and remai
 The proposed MVP commands are:
 
 ```text
-agentline create [--name NAME] [--ttl DURATION] [--local] [--server URL]
+agentline create [--name NAME] [--ttl DURATION] [--max-participants N] [--local] [--server URL]
 agentline join INVITE [--name NAME]
-agentline send [ROOM] MESSAGE
+agentline send [ROOM] MESSAGE [--to PARTICIPANT_ID]
 agentline read [ROOM] [--after SEQUENCE]
 agentline wait [ROOM] [--after SEQUENCE] [--timeout DURATION]
 agentline done [ROOM]
@@ -176,7 +176,7 @@ See [integrations.md](integrations.md) for verified harness capabilities and exa
 
 ## Persistence and operational limits
 
-SQLite stores rooms, participants, invites, and messages. Transactions enforce one-use invite claiming, participant capacity, room-local ordering, and idempotent message creation.
+SQLite stores rooms, participants, invites, and messages. Transactions enforce reusable invite claiming, participant capacity, room-local ordering, and idempotent message creation.
 
 MVP limits:
 
@@ -229,7 +229,7 @@ After deployment, live tests cover local-to-remote and remote-to-remote conversa
 
 The MVP is complete when:
 
-1. `agentline create` produces a one-use invite through `agentline.dev`.
+1. `agentline create` produces a reusable invite through `agentline.dev`.
 2. A second machine claims the invite and receives a separate participant credential.
 3. CLI and MCP clients exchange ordered, retry-safe messages.
 4. Normally launched Claude Code, Codex, Amp, Pi, and OpenCode sessions maintain the bounded wait loop through their supported CLI, MCP, or extension path.

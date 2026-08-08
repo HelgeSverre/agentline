@@ -28,11 +28,12 @@ func (d *durationValue) Set(value string) error {
 }
 
 type createOpts struct {
-	name     string
-	roomName string
-	server   string
-	local    bool
-	ttl      durationValue
+	name            string
+	roomName        string
+	server          string
+	local           bool
+	ttl             durationValue
+	maxParticipants int
 }
 
 type joinOpts struct {
@@ -42,6 +43,7 @@ type joinOpts struct {
 type sendOpts struct {
 	replyTo   string
 	messageID string
+	to        string
 }
 
 type readWaitOpts struct {

@@ -40,9 +40,11 @@ func OpenSQLite(path string, now func() time.Time) (Store, error) {
 func (s *sqliteStore) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS rooms (
- id TEXT PRIMARY KEY, public_name TEXT NOT NULL, max_participants INTEGER NOT NULL CHECK(max_participants BETWEEN 1 AND 2),
+ id TEXT PRIMARY KEY, public_name TEXT NOT NULL,
+ max_participants INTEGER CHECK(max_participants > 0),
  status TEXT NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 1,
- created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, ended_at INTEGER, ended_by TEXT
+ created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+ ended_at INTEGER, ended_by TEXT
 );
 CREATE TABLE IF NOT EXISTS participants (
  id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -51,7 +53,7 @@ CREATE TABLE IF NOT EXISTS participants (
 );
 CREATE TABLE IF NOT EXISTS invites (
  id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
- token_hash BLOB NOT NULL UNIQUE, claimed_at INTEGER, claimed_by TEXT REFERENCES participants(id)
+ token_hash BLOB NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS inspectors (
  room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
@@ -59,12 +61,15 @@ CREATE TABLE IF NOT EXISTS inspectors (
 );
 CREATE TABLE IF NOT EXISTS messages (
  id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
- sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, kind TEXT NOT NULL,
- body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
- UNIQUE(room_id, sequence),
- FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id)
+ sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, recipient_id TEXT,
+ kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '',
+ created_at INTEGER NOT NULL, UNIQUE(room_id, sequence),
+ FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id),
+ FOREIGN KEY(room_id, recipient_id) REFERENCES participants(room_id, id)
 );
 CREATE INDEX IF NOT EXISTS messages_after ON messages(room_id, sequence);
+CREATE INDEX IF NOT EXISTS messages_recipient_after ON messages(room_id, recipient_id, sequence);
+CREATE INDEX IF NOT EXISTS participants_room ON participants(room_id, joined_at, id);
 CREATE INDEX IF NOT EXISTS rooms_expiry ON rooms(expires_at);`)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
@@ -73,7 +78,7 @@ CREATE INDEX IF NOT EXISTS rooms_expiry ON rooms(expires_at);`)
 }
 
 func (s *sqliteStore) CreateRoom(ctx context.Context, p CreateRoomParams) (CreatedRoom, error) {
-	if p.TTL <= 0 || p.MaxParticipants < 1 || p.MaxParticipants > 2 {
+	if p.TTL <= 0 || p.MaxParticipants != nil && *p.MaxParticipants <= 0 {
 		return CreatedRoom{}, ErrInvalid
 	}
 	roomID, err := securetoken.New(16)
@@ -137,17 +142,13 @@ func (s *sqliteStore) ClaimInvite(ctx context.Context, rawToken, name string) (C
 		return ClaimResult{}, err
 	}
 	defer tx.Rollback()
-	var inviteID, roomID string
-	var claimedAt sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT id,room_id,claimed_at FROM invites WHERE token_hash=?`, hash[:]).Scan(&inviteID, &roomID, &claimedAt)
+	var roomID string
+	err = tx.QueryRowContext(ctx, `SELECT room_id FROM invites WHERE token_hash=?`, hash[:]).Scan(&roomID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClaimResult{}, ErrInviteInvalid
 	}
 	if err != nil {
 		return ClaimResult{}, err
-	}
-	if claimedAt.Valid {
-		return ClaimResult{}, ErrInviteClaimed
 	}
 	room, err := getRoom(ctx, tx, roomID)
 	if err != nil {
@@ -156,11 +157,14 @@ func (s *sqliteStore) ClaimInvite(ctx context.Context, rawToken, name string) (C
 	if err := activeAt(room, now); err != nil {
 		return ClaimResult{}, err
 	}
+	if room.Status == "done" {
+		return ClaimResult{}, ErrRoomClosed
+	}
 	var count int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM participants WHERE room_id=?`, roomID).Scan(&count); err != nil {
 		return ClaimResult{}, err
 	}
-	if count >= room.MaxParticipants {
+	if room.MaxParticipants != nil && count >= *room.MaxParticipants {
 		return ClaimResult{}, ErrRoomFull
 	}
 	participantToken, err := securetoken.New(32)
@@ -175,17 +179,6 @@ func (s *sqliteStore) ClaimInvite(ctx context.Context, rawToken, name string) (C
 	tokenHash := securetoken.Hash(participantToken)
 	if _, err = tx.ExecContext(ctx, `INSERT INTO participants(id,room_id,name,token_hash,joined_at) VALUES(?,?,?,?,?)`, participant.ID, roomID, name, tokenHash[:], nanos(now)); err != nil {
 		return ClaimResult{}, err
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE invites SET claimed_at=?,claimed_by=? WHERE id=? AND claimed_at IS NULL`, nanos(now), participant.ID, inviteID)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	if changed != 1 {
-		return ClaimResult{}, ErrInviteClaimed
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE rooms SET status='active' WHERE id=?`, roomID); err != nil {
 		return ClaimResult{}, err
@@ -228,8 +221,24 @@ func (s *sqliteStore) Inspect(ctx context.Context, rawToken string) (model.Room,
 	if err != nil {
 		return model.Room{}, nil, err
 	}
-	messages, err := s.MessagesAfter(ctx, room.ID, 0, maxEvents)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at
+		FROM messages m JOIN participants p ON p.id=m.sender_id
+		WHERE m.room_id=? ORDER BY m.sequence LIMIT ?`, room.ID, maxEvents)
 	if err != nil {
+		return model.Room{}, nil, err
+	}
+	defer rows.Close()
+	messages := make([]model.Message, 0)
+	for rows.Next() {
+		var message model.Message
+		var created int64
+		if err := rows.Scan(&message.ID, &message.RoomID, &message.SenderID, &message.SenderName, &message.Body, &message.ReplyTo, &message.To, &message.Sequence, &message.Kind, &created); err != nil {
+			return model.Room{}, nil, err
+		}
+		message.CreatedAt = fromNanos(created)
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
 		return model.Room{}, nil, err
 	}
 	return room, messages, nil
@@ -246,6 +255,28 @@ func (s *sqliteStore) GetRoom(ctx context.Context, roomID string) (model.Room, e
 	return room, nil
 }
 
+func (s *sqliteStore) Participants(ctx context.Context, roomID string) ([]model.Participant, error) {
+	if _, err := s.GetRoom(ctx, roomID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,room_id,name,joined_at FROM participants WHERE room_id=? ORDER BY joined_at,id`, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	participants := []model.Participant{}
+	for rows.Next() {
+		var participant model.Participant
+		var joined int64
+		if err := rows.Scan(&participant.ID, &participant.RoomID, &participant.Name, &joined); err != nil {
+			return nil, err
+		}
+		participant.JoinedAt = fromNanos(joined)
+		participants = append(participants, participant)
+	}
+	return participants, rows.Err()
+}
+
 type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
@@ -253,12 +284,17 @@ type queryer interface {
 func getRoom(ctx context.Context, q queryer, roomID string) (model.Room, error) {
 	var room model.Room
 	var created, expires int64
-	err := q.QueryRowContext(ctx, `SELECT id,public_name,status,max_participants,created_at,expires_at FROM rooms WHERE id=?`, roomID).Scan(&room.ID, &room.Name, &room.Status, &room.MaxParticipants, &created, &expires)
+	var maxParticipants sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT id,public_name,status,max_participants,created_at,expires_at FROM rooms WHERE id=?`, roomID).Scan(&room.ID, &room.Name, &room.Status, &maxParticipants, &created, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Room{}, ErrRoomNotFound
 	}
 	if err != nil {
 		return model.Room{}, err
+	}
+	if maxParticipants.Valid {
+		max := int(maxParticipants.Int64)
+		room.MaxParticipants = &max
 	}
 	room.CreatedAt, room.ExpiresAt = fromNanos(created), fromNanos(expires)
 	return room, nil
@@ -308,6 +344,14 @@ func (s *sqliteStore) append(ctx context.Context, p AppendParams, closeRoom bool
 	} else if err != nil {
 		return model.Message{}, err
 	}
+	if p.To != "" {
+		var exists int
+		if err = tx.QueryRowContext(ctx, `SELECT 1 FROM participants WHERE room_id=? AND id=?`, p.RoomID, p.To).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return model.Message{}, ErrInvalid
+		} else if err != nil {
+			return model.Message{}, err
+		}
+	}
 	var sequence int64
 	if err = tx.QueryRowContext(ctx, `SELECT next_sequence FROM rooms WHERE id=?`, p.RoomID).Scan(&sequence); err != nil {
 		return model.Message{}, err
@@ -316,8 +360,11 @@ func (s *sqliteStore) append(ctx context.Context, p AppendParams, closeRoom bool
 		return model.Message{}, ErrEventLimit
 	}
 	now := s.now().UTC()
-	message := model.Message{ID: p.MessageID, RoomID: p.RoomID, SenderID: p.ParticipantID, SenderName: senderName, Body: p.Body, ReplyTo: p.ReplyTo, Sequence: sequence, Kind: p.Kind, CreatedAt: now}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(id,room_id,sequence,sender_id,kind,body,reply_to,created_at) VALUES(?,?,?,?,?,?,?,?)`, message.ID, message.RoomID, sequence, message.SenderID, message.Kind, message.Body, message.ReplyTo, nanos(now)); err != nil {
+	message := model.Message{ID: p.MessageID, RoomID: p.RoomID, SenderID: p.ParticipantID, SenderName: senderName, Body: p.Body, ReplyTo: p.ReplyTo, To: p.To, Sequence: sequence, Kind: p.Kind, CreatedAt: now}
+	if closeRoom {
+		message.To = ""
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(id,room_id,sequence,sender_id,recipient_id,kind,body,reply_to,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, message.ID, message.RoomID, sequence, message.SenderID, nullIfEmpty(message.To), message.Kind, message.Body, message.ReplyTo, nanos(now)); err != nil {
 		return model.Message{}, err
 	}
 	if closeRoom {
@@ -338,13 +385,14 @@ func sameMessage(existing model.Message, retry AppendParams) bool {
 		existing.SenderID == retry.ParticipantID &&
 		existing.Kind == retry.Kind &&
 		existing.Body == retry.Body &&
-		existing.ReplyTo == retry.ReplyTo
+		existing.ReplyTo == retry.ReplyTo &&
+		existing.To == retry.To
 }
 
 func findMessage(ctx context.Context, q queryer, id string) (model.Message, bool, error) {
 	var m model.Message
 	var created int64
-	err := q.QueryRowContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.id=?`, id).Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.Sequence, &m.Kind, &created)
+	err := q.QueryRowContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.id=?`, id).Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.To, &m.Sequence, &m.Kind, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Message{}, false, nil
 	}
@@ -355,29 +403,61 @@ func findMessage(ctx context.Context, q queryer, id string) (model.Message, bool
 	return m, true, nil
 }
 
-func (s *sqliteStore) MessagesAfter(ctx context.Context, roomID string, sequence int64, limit int) ([]model.Message, error) {
+func (s *sqliteStore) MessagesAfter(ctx context.Context, roomID, participantID string, sequence int64, limit int, skipSelf bool) (VisibleMessages, error) {
 	if _, err := s.GetRoom(ctx, roomID); err != nil {
-		return nil, err
+		return VisibleMessages{}, err
 	}
+	var participantExists int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM participants WHERE id=? AND room_id=?`, participantID, roomID).Scan(&participantExists); errors.Is(err, sql.ErrNoRows) {
+		return VisibleMessages{}, ErrUnauthorized
+	} else if err != nil {
+		return VisibleMessages{}, err
+	}
+	result := VisibleMessages{Messages: []model.Message{}, Cursor: sequence}
 	if limit <= 0 {
-		return []model.Message{}, nil
+		return result, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.room_id=? AND m.sequence>? ORDER BY m.sequence LIMIT ?`, roomID, sequence, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	messages := make([]model.Message, 0)
-	for rows.Next() {
-		var m model.Message
-		var created int64
-		if err := rows.Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.Sequence, &m.Kind, &created); err != nil {
-			return nil, err
+	const pageSize = 100
+	for result.Cursor < maxEvents && len(result.Messages) < limit {
+		rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at,
+			(m.kind='done' OR m.recipient_id IS NULL OR m.sender_id=? OR m.recipient_id=?)
+			FROM messages m JOIN participants p ON p.id=m.sender_id
+			WHERE m.room_id=? AND m.sequence>? ORDER BY m.sequence LIMIT ?`, participantID, participantID, roomID, result.Cursor, pageSize)
+		if err != nil {
+			return VisibleMessages{}, err
 		}
-		m.CreatedAt = fromNanos(created)
-		messages = append(messages, m)
+		examined := 0
+		for rows.Next() {
+			var m model.Message
+			var created int64
+			var visible bool
+			if err := rows.Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.To, &m.Sequence, &m.Kind, &created, &visible); err != nil {
+				rows.Close()
+				return VisibleMessages{}, err
+			}
+			examined++
+			result.Cursor = m.Sequence
+			if !visible || (skipSelf && m.Kind == "message" && m.SenderID == participantID) {
+				continue
+			}
+			m.CreatedAt = fromNanos(created)
+			result.Messages = append(result.Messages, m)
+			if len(result.Messages) == limit {
+				break
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return VisibleMessages{}, err
+		}
+		if err := rows.Close(); err != nil {
+			return VisibleMessages{}, err
+		}
+		if examined < pageSize {
+			break
+		}
 	}
-	return messages, rows.Err()
+	return result, nil
 }
 
 func (s *sqliteStore) CloseRoom(ctx context.Context, roomID, participantID, messageID string) (model.Message, error) {
@@ -396,3 +476,9 @@ func (s *sqliteStore) Ping(ctx context.Context) error { return s.db.PingContext(
 func (s *sqliteStore) Close() error                   { return s.db.Close() }
 func nanos(t time.Time) int64                         { return t.UnixNano() }
 func fromNanos(n int64) time.Time                     { return time.Unix(0, n).UTC() }
+func nullIfEmpty(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}

@@ -40,6 +40,7 @@ func (a *app) newCreateCommand() *cobra.Command {
 	cmd.Flags().Var(&o.ttl, "ttl", "room lifetime, for example 24h or 1d (max 7d)")
 	cmd.Flags().StringVar(&o.server, "server", "", "relay server URL; defaults to the saved server")
 	cmd.Flags().BoolVar(&o.local, "local", false, "use the managed loopback relay")
+	cmd.Flags().IntVar(&o.maxParticipants, "max-participants", 0, "maximum participants; omit for no limit")
 	return cmd
 }
 
@@ -74,7 +75,14 @@ func (a *app) create(o *createOpts, localExplicit, serverExplicit bool) error {
 	if err := client.ValidateOrigin(serverURL); err != nil {
 		return fmt.Errorf("invalid server URL: %w", err)
 	}
-	result, err := client.New(serverURL, "", a.deps.HTTP).CreateRoom(a.ctx, o.roomName, o.name, time.Duration(o.ttl))
+	var capacity *int
+	if o.maxParticipants < 0 {
+		return errors.New("max-participants must be a positive integer")
+	}
+	if o.maxParticipants > 0 {
+		capacity = &o.maxParticipants
+	}
+	result, err := client.New(serverURL, "", a.deps.HTTP).CreateRoom(a.ctx, o.roomName, o.name, time.Duration(o.ttl), capacity)
 	if err != nil {
 		return err
 	}
@@ -141,6 +149,7 @@ func (a *app) newSendCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&o.replyTo, "reply-to", "", "message ID being answered")
+	cmd.Flags().StringVar(&o.to, "to", "", "participant ID for a private message")
 	cmd.Flags().StringVar(&o.messageID, "message-id", "", "stable ID reused when retrying this logical message")
 	return cmd
 }
@@ -150,7 +159,7 @@ func (a *app) send(o *sendOpts, args []string) error {
 	if err != nil {
 		return fmt.Errorf("send: %w", err)
 	}
-	message, err := client.New(credential.ServerURL, credential.Token, a.deps.HTTP).Send(a.ctx, credential.RoomID, o.messageID, rest[0], o.replyTo)
+	message, err := client.New(credential.ServerURL, credential.Token, a.deps.HTTP).Send(a.ctx, credential.RoomID, o.messageID, rest[0], o.replyTo, o.to)
 	if err != nil {
 		return err
 	}
@@ -188,17 +197,17 @@ func (a *app) read(o *readWaitOpts, args []string) error {
 	if o.after >= 0 {
 		cursor = o.after
 	}
-	messages, err := client.New(credential.ServerURL, credential.Token, a.deps.HTTP).Read(a.ctx, credential.RoomID, cursor)
+	result, err := client.New(credential.ServerURL, credential.Token, a.deps.HTTP).Read(a.ctx, credential.RoomID, cursor)
 	if err != nil {
 		return err
 	}
-	if err := a.advance(credential, messages); err != nil {
+	if err := a.advance(credential, result.Messages, result.Cursor); err != nil {
 		return err
 	}
 	if a.json {
-		return a.printJSON(map[string]any{"messages": messages})
+		return a.printJSON(result)
 	}
-	for _, m := range messages {
+	for _, m := range result.Messages {
 		fmt.Fprintf(a.out, "%d %s: %s\n", m.Sequence, m.SenderName, m.Body)
 	}
 	return nil
@@ -624,8 +633,8 @@ func (a *app) room(args []string, minimum, maximum int) (model.RoomCredential, [
 	return credential, args, err
 }
 
-func (a *app) advance(credential model.RoomCredential, messages []model.Message) error {
-	sequence := credential.Cursor
+func (a *app) advance(credential model.RoomCredential, messages []model.Message, cursor int64) error {
+	sequence := cursor
 	for _, message := range messages {
 		if message.Sequence > sequence {
 			sequence = message.Sequence
