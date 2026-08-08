@@ -142,6 +142,9 @@ func TestJoinRepresentationsDoNotClaimInvite(t *testing.T) {
 			if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), test.contentType) || !strings.Contains(string(body), test.contains) {
 				t.Fatalf("status=%d content-type=%q body=%q", resp.StatusCode, resp.Header.Get("Content-Type"), body)
 			}
+			if !strings.Contains(string(body), "curl -fsSL https://relay.example/install.sh | sh") {
+				t.Errorf("join instructions do not pipe the installer to sh: %q", body)
+			}
 			for name, want := range map[string]string{
 				"Cache-Control":          "no-store",
 				"Referrer-Policy":        "no-referrer",

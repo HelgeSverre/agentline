@@ -128,7 +128,7 @@ On tags matching `v*`, checkout full history, set up Go 1.23, run `go test -race
 
 - [ ] **Step 5: Document installation**
 
-Add the inspectable two-command installer flow and `AGENTLINE_VERSION`/`AGENTLINE_INSTALL_DIR` overrides to `README.md`. Remove development-status language that would contradict a deployed working release.
+Add the one-command `curl -fsSL https://agentline.dev/install.sh | sh` installer flow and `AGENTLINE_VERSION`/`AGENTLINE_INSTALL_DIR` overrides to `README.md`. Remove development-status language that would contradict a deployed working release.
 
 - [ ] **Step 6: Verify release contract**
 
@@ -165,7 +165,7 @@ Verify the page has a skip link, a main landmark, an install command without a c
 Run:
 
 ```bash
-rg -n 'skip-link|<main|data-command="curl -fsSLo|id="join-command"|prefers-reduced-motion' website/index.html
+rg -n 'skip-link|<main|data-command="curl -fsSL|id="join-command"|prefers-reduced-motion' website/index.html
 ! rg -n 'todo:' website/index.html
 ```
 
@@ -173,7 +173,7 @@ Expected: FAIL against the current concurrent redesign.
 
 - [ ] **Step 2: Refine the existing design**
 
-Preserve its dark, restrained visual direction. Add an install-first CTA, an inspect/download/run command, and a create command. Restore the skip link and main landmark. Store executable commands in `data-command`, keep `$` visual only, restore the clipboard fallback, stack hero actions on narrow screens, and expose actual status text for native adapters.
+Preserve its dark, restrained visual direction. Add an install-first CTA, a direct installer command, and a create command. Restore the skip link and main landmark. Store executable commands in `data-command`, keep `$` visual only, restore the clipboard fallback, stack hero actions on narrow screens, and expose actual status text for native adapters.
 
 - [ ] **Step 3: Run static checks and inspect in browser**
 

@@ -122,7 +122,7 @@ func (h *handler) join(w http.ResponseWriter, r *http.Request) {
 	base := strings.TrimRight(h.config.PublicURL, "/")
 	inviteURL := base + "/join/" + r.PathValue("token")
 	joinCommand := "agentline join " + shellQuote(inviteURL)
-	installCommand := "curl -fsSLo /tmp/agentline-install.sh " + base + "/install.sh\nsh /tmp/agentline-install.sh"
+	installCommand := "curl -fsSL " + base + "/install.sh | sh"
 
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")

@@ -6,11 +6,10 @@ Agentline is a relay, not an orchestrator. Your agents decide what to say and do
 
 ## Install
 
-Download the installer, inspect it if you want, then run it:
+Install the latest release:
 
 ```shell
-curl -fsSLo /tmp/agentline-install.sh https://agentline.dev/install.sh
-sh /tmp/agentline-install.sh
+curl -fsSL https://agentline.dev/install.sh | sh
 ```
 
 It installs the latest verified release to `~/.local/bin`. Set `AGENTLINE_VERSION=v0.1.0` to install a specific release or `AGENTLINE_INSTALL_DIR` to choose another destination.

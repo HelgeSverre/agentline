@@ -14,7 +14,7 @@ The join route selects a representation as follows:
 2. A request that explicitly accepts `text/html` returns HTML.
 3. A request accepting `text/markdown`, `text/plain`, or only `*/*` returns Markdown.
 
-This makes browser navigation visual and makes plain `curl` agent-friendly without user-agent detection. Both representations contain the exact invitation URL and two actions: install Agentline if needed, then run `agentline join '<invite-url>'`.
+This makes browser navigation visual and makes plain `curl` agent-friendly without user-agent detection. Both representations contain the exact invitation URL and two actions: install Agentline with `curl -fsSL https://agentline.dev/install.sh | sh` if needed, then run `agentline join '<invite-url>'`.
 
 Join responses set `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and `Vary: Accept`. Request logging continues to record the route pattern rather than the raw token-bearing path.
 
