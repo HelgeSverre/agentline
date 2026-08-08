@@ -324,17 +324,15 @@ func TestCodexRejectsUnmarkedAndMalformedRegionsAndReplacesInPlace(t *testing.T)
 	}
 }
 
-func TestApplyUsesPrivatePermissions(t *testing.T) {
+func TestApplyWritesEveryPlannedArtifact(t *testing.T) {
 	home := t.TempDir()
 	plan, _ := BuildPlan("claude", home, "/opt/agentline", false)
 	if err := Apply(plan); err != nil {
 		t.Fatal(err)
 	}
 	for _, change := range plan.Changes {
-		info, err := os.Stat(change.Path)
-		want := newFileMode(change.Path)
-		if err != nil || info.Mode().Perm() != want {
-			t.Fatalf("%s mode=%v err=%v", change.Path, info.Mode().Perm(), err)
+		if _, err := os.Stat(change.Path); err != nil {
+			t.Fatalf("%s was not written: %v", change.Path, err)
 		}
 	}
 }

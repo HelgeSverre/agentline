@@ -260,7 +260,7 @@ func managementRequest(ctx context.Context, method string, value state, path str
 }
 
 func lock(ctx context.Context, root string) (func(), error) {
-	if err := os.MkdirAll(root, 0o700); err != nil {
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
 	fileLock := flock.New(filepath.Join(root, "local-server.lock"))
@@ -312,10 +312,6 @@ func writeState(path string, value state) error {
 	}
 	name := temporary.Name()
 	defer os.Remove(name)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
-	}
 	if _, err := temporary.Write(data); err != nil {
 		temporary.Close()
 		return err

@@ -343,4 +343,4 @@ $ agentline doctor
 $ agentline setup claude --remove
 ```
 
-Setup performs version checks, shows proposed changes, asks before writing, and modifies only Agentline-owned entries. `doctor` verifies the binary path, relay connectivity, credential file permissions, skill discovery, MCP registration, and native adapter availability.
+Setup performs version checks, shows proposed changes, asks before writing, and overwrites Agentline's integration files. `doctor` verifies the binary path, relay connectivity, saved credentials, skill discovery, MCP registration, and native adapter availability.

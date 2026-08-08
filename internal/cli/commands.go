@@ -51,9 +51,6 @@ func (a *app) create(o *createOpts, localExplicit, serverExplicit, capacityExpli
 	if time.Duration(o.ttl) <= 0 || time.Duration(o.ttl) > 7*24*time.Hour {
 		return errors.New("ttl must be greater than zero and at most 7d")
 	}
-	if err := a.deps.Config.Preflight(); err != nil {
-		return err
-	}
 	config, err := a.deps.Config.Load()
 	if err != nil {
 		return err
@@ -113,9 +110,6 @@ func (a *app) newJoinCommand() *cobra.Command {
 }
 
 func (a *app) join(o *joinOpts, invite string) error {
-	if err := a.deps.Config.Preflight(); err != nil {
-		return err
-	}
 	token, err := client.InviteToken(invite)
 	if err != nil || token == "" {
 		return errors.New("invalid invite URL")
@@ -572,7 +566,7 @@ func (a *app) newDoctorCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "verify local setup and relay connectivity",
-		Long:  "Check the binary, relay reachability, credential permissions, skill discovery, MCP registration, and native adapters. --target limits checks to one harness.",
+		Long:  "Check the binary, relay reachability, saved credentials, skill discovery, MCP registration, and native adapters. --target limits checks to one harness.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.doctor(o)

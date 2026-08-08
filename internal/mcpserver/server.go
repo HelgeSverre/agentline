@@ -109,9 +109,6 @@ func Run(ctx context.Context, deps Dependencies) error {
 }
 
 func (s service) create(ctx context.Context, _ *mcp.CallToolRequest, in createInput) (*mcp.CallToolResult, createOutput, error) {
-	if err := s.deps.Config.Preflight(); err != nil {
-		return nil, createOutput{}, err
-	}
 	config, err := s.deps.Config.Load()
 	if err != nil {
 		return nil, createOutput{}, err
@@ -150,9 +147,6 @@ func (s service) create(ctx context.Context, _ *mcp.CallToolRequest, in createIn
 }
 
 func (s service) join(ctx context.Context, _ *mcp.CallToolRequest, in joinInput) (*mcp.CallToolResult, joinOutput, error) {
-	if err := s.deps.Config.Preflight(); err != nil {
-		return nil, joinOutput{}, err
-	}
 	if in.ParticipantName == "" {
 		in.ParticipantName = "agent"
 	}

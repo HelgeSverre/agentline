@@ -24,7 +24,7 @@ func TestLoadUsesDefaultServer(t *testing.T) {
 	}
 }
 
-func TestSaveUsesPrivatePermissionsAndReplacesAtomically(t *testing.T) {
+func TestSaveReplacesAtomically(t *testing.T) {
 	store := Store{Root: filepath.Join(t.TempDir(), "agentline")}
 	if err := store.Save(Config{ServerURL: "https://first.example"}); err != nil {
 		t.Fatal(err)
@@ -32,8 +32,6 @@ func TestSaveUsesPrivatePermissionsAndReplacesAtomically(t *testing.T) {
 	if err := store.Save(Config{ServerURL: "https://second.example"}); err != nil {
 		t.Fatal(err)
 	}
-	assertMode(t, store.Root, 0o700)
-	assertMode(t, filepath.Join(store.Root, "config.json"), 0o600)
 	entries, err := os.ReadDir(store.Root)
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +141,7 @@ func TestLoadRejectsTrailingJSONGarbage(t *testing.T) {
 	}
 }
 
-func TestRoomLifecycleAndPrivatePermissions(t *testing.T) {
+func TestRoomLifecycle(t *testing.T) {
 	store := Store{Root: filepath.Join(t.TempDir(), "agentline")}
 	if err := os.Mkdir(store.Root, 0o755); err != nil {
 		t.Fatal(err)
@@ -152,9 +150,6 @@ func TestRoomLifecycleAndPrivatePermissions(t *testing.T) {
 	if err := store.SaveRoom(want); err != nil {
 		t.Fatal(err)
 	}
-	assertMode(t, store.Root, 0o700)
-	assertMode(t, filepath.Join(store.Root, "rooms"), 0o700)
-	assertMode(t, filepath.Join(store.Root, "rooms", "room-1.json"), 0o600)
 
 	got, err := store.LoadRoom("")
 	if err != nil {
@@ -177,6 +172,23 @@ func TestRoomLifecycleAndPrivatePermissions(t *testing.T) {
 	if _, err := store.LoadRoom(""); !errors.Is(err, ErrRoomNotFound) {
 		t.Fatalf("LoadRoom after remove error = %v", err)
 	}
+}
+
+func TestAdvanceCursorDoesNotChangeExistingDirectoryPermissions(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "agentline")
+	store := Store{Root: root}
+	room := model.RoomCredential{RoomID: "room", RoomName: "name", Token: "secret"}
+	if err := store.SaveRoom(room); err != nil {
+		t.Fatal(err)
+	}
+	roomsDir := filepath.Join(root, "rooms")
+	if err := os.Chmod(roomsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdvanceCursor(room.RoomID, 1); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, roomsDir, 0o755)
 }
 
 func TestLoadRoomRefusesToGuessAmongMultipleRooms(t *testing.T) {

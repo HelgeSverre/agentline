@@ -113,9 +113,9 @@ func (s Store) ListRooms() ([]model.RoomCredential, error)
 func (s Store) RemoveRoom(roomID string) error
 ```
 
-- [ ] Write tests for token uniqueness, hash stability, default server, `0700` directories, `0600` credential files, atomic saves, one-room resolution, and refusal to guess among multiple rooms.
+- [ ] Write tests for token uniqueness, hash stability, default server, atomic saves, one-room resolution, and refusal to guess among multiple rooms.
 - [ ] Run `go test ./internal/securetoken ./internal/localconfig`; expect failure before implementation.
-- [ ] Implement with `crypto/rand`, `crypto/sha256`, raw URL-safe base64, `os.UserConfigDir`, temporary files, `Chmod`, and atomic rename.
+- [ ] Implement with `crypto/rand`, `crypto/sha256`, raw URL-safe base64, `os.UserConfigDir`, temporary files, and atomic rename.
 - [ ] Run the focused tests; expect PASS.
 
 ---

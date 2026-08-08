@@ -490,19 +490,11 @@ func Apply(plan Plan) error {
 	}
 	staged := make([]string, len(plan.Changes))
 	stagedBackups := make([]string, len(plan.Changes))
-	modes := make([]os.FileMode, len(plan.Changes))
 	backupBefore := make([][]byte, len(plan.Changes))
 	backupExisted := make([]bool, len(plan.Changes))
 	for i, change := range plan.Changes {
-		mode := newFileMode(change.Path)
-		if info, err := os.Stat(change.Path); err == nil {
-			mode = info.Mode().Perm()
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		modes[i] = mode
 		if len(change.After) > 0 {
-			path, err := stageFile(change.Path, change.After, mode)
+			path, err := stageFile(change.Path, change.After)
 			if err != nil {
 				cleanupStages(staged)
 				cleanupStages(stagedBackups)
@@ -520,7 +512,7 @@ func Apply(plan Plan) error {
 			}
 			_, statErr := os.Stat(change.Path + ".agentline.bak")
 			backupExisted[i] = statErr == nil
-			backup, stageErr := stageFile(change.Path+".agentline.bak", change.Before, 0o600)
+			backup, stageErr := stageFile(change.Path+".agentline.bak", change.Before)
 			if stageErr != nil {
 				cleanupStages(staged)
 				cleanupStages(stagedBackups)
@@ -551,7 +543,7 @@ func Apply(plan Plan) error {
 	for i, change := range plan.Changes {
 		if err := validateSnapshotsFrom(plan, i); err != nil {
 			cleanupStages(staged)
-			return errors.Join(err, rollbackTargets(plan, modes, committed), restoreBackups(plan, backupBefore, backupExisted, len(plan.Changes)))
+			return errors.Join(err, rollbackTargets(plan, committed), restoreBackups(plan, backupBefore, backupExisted, len(plan.Changes)))
 		}
 		var err error
 		if len(change.After) == 0 {
@@ -562,7 +554,7 @@ func Apply(plan Plan) error {
 		}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			cleanupStages(staged)
-			return errors.Join(err, rollbackTargets(plan, modes, committed), restoreBackups(plan, backupBefore, backupExisted, len(plan.Changes)))
+			return errors.Join(err, rollbackTargets(plan, committed), restoreBackups(plan, backupBefore, backupExisted, len(plan.Changes)))
 		}
 		committed++
 	}
@@ -587,7 +579,7 @@ func validateSnapshotsFrom(plan Plan, start int) error {
 	return nil
 }
 
-func rollbackTargets(plan Plan, modes []os.FileMode, committed int) error {
+func rollbackTargets(plan Plan, committed int) error {
 	var errs []error
 	for j := committed - 1; j >= 0; j-- {
 		c := plan.Changes[j]
@@ -595,7 +587,7 @@ func rollbackTargets(plan Plan, modes []os.FileMode, committed int) error {
 			if err := os.Remove(c.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				errs = append(errs, err)
 			}
-		} else if err := atomicWrite(c.Path, c.Before, modes[j]); err != nil {
+		} else if err := atomicWrite(c.Path, c.Before); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -613,18 +605,11 @@ func restoreBackups(plan Plan, before [][]byte, existed []bool, through int) err
 			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				errs = append(errs, err)
 			}
-		} else if err := atomicWrite(path, before[i], 0o600); err != nil {
+		} else if err := atomicWrite(path, before[i]); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
-}
-
-func newFileMode(path string) os.FileMode {
-	if strings.HasSuffix(path, "SKILL.md") || (filepath.Base(path) == "mcp.json" && filepath.Base(filepath.Dir(path)) == "agentline" && strings.Contains(path, filepath.Join("agents", "skills"))) {
-		return 0o644
-	}
-	return 0o600
 }
 
 func cleanupStages(paths []string) {
@@ -635,9 +620,9 @@ func cleanupStages(paths []string) {
 	}
 }
 
-func stageFile(path string, data []byte, mode os.FileMode) (string, error) {
+func stageFile(path string, data []byte) (string, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	f, err := os.CreateTemp(dir, ".agentline-*")
@@ -645,9 +630,7 @@ func stageFile(path string, data []byte, mode os.FileMode) (string, error) {
 		return "", err
 	}
 	temp := f.Name()
-	if err = f.Chmod(mode); err == nil {
-		_, err = f.Write(data)
-	}
+	_, err = f.Write(data)
 	if err == nil {
 		err = f.Sync()
 	}
@@ -661,8 +644,8 @@ func stageFile(path string, data []byte, mode os.FileMode) (string, error) {
 	return temp, nil
 }
 
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	temp, err := stageFile(path, data, mode)
+func atomicWrite(path string, data []byte) error {
+	temp, err := stageFile(path, data)
 	if err != nil {
 		return err
 	}
@@ -745,25 +728,14 @@ func Doctor(ctx context.Context, target, home, executable, relayURL string) Repo
 	} else if err != nil {
 		add("credentials", "fail", err.Error())
 	} else {
-		good := true
+		count := 0
 		for _, e := range entries {
 			if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 				continue
 			}
-			info, infoErr := e.Info()
-			if infoErr != nil {
-				good = false
-				continue
-			}
-			if info.Mode().Perm()&0o077 != 0 {
-				good = false
-			}
+			count++
 		}
-		if good {
-			add("credentials", "pass", "credential permissions are private")
-		} else {
-			add("credentials", "fail", "credential file permissions are too broad")
-		}
+		add("credentials", "pass", fmt.Sprintf("%d saved room credential(s)", count))
 	}
 	targets := []string{target}
 	if target == "all" {
