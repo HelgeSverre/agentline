@@ -356,29 +356,61 @@ func findMessage(ctx context.Context, q queryer, id string) (model.Message, bool
 	return m, true, nil
 }
 
-func (s *sqliteStore) MessagesAfter(ctx context.Context, roomID string, sequence int64, limit int) ([]model.Message, error) {
+func (s *sqliteStore) MessagesAfter(ctx context.Context, roomID, participantID string, sequence int64, limit int, skipSelf bool) (VisibleMessages, error) {
 	if _, err := s.GetRoom(ctx, roomID); err != nil {
-		return nil, err
+		return VisibleMessages{}, err
 	}
+	var participantExists int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM participants WHERE id=? AND room_id=?`, participantID, roomID).Scan(&participantExists); errors.Is(err, sql.ErrNoRows) {
+		return VisibleMessages{}, ErrUnauthorized
+	} else if err != nil {
+		return VisibleMessages{}, err
+	}
+	result := VisibleMessages{Messages: []model.Message{}, Cursor: sequence}
 	if limit <= 0 {
-		return []model.Message{}, nil
+		return result, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.room_id=? AND m.sequence>? ORDER BY m.sequence LIMIT ?`, roomID, sequence, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	messages := make([]model.Message, 0)
-	for rows.Next() {
-		var m model.Message
-		var created int64
-		if err := rows.Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.To, &m.Sequence, &m.Kind, &created); err != nil {
-			return nil, err
+	const pageSize = 100
+	for result.Cursor < maxEvents && len(result.Messages) < limit {
+		rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at,
+			(m.kind='done' OR m.recipient_id IS NULL OR m.sender_id=? OR m.recipient_id=?)
+			FROM messages m JOIN participants p ON p.id=m.sender_id
+			WHERE m.room_id=? AND m.sequence>? ORDER BY m.sequence LIMIT ?`, participantID, participantID, roomID, result.Cursor, pageSize)
+		if err != nil {
+			return VisibleMessages{}, err
 		}
-		m.CreatedAt = fromNanos(created)
-		messages = append(messages, m)
+		examined := 0
+		for rows.Next() {
+			var m model.Message
+			var created int64
+			var visible bool
+			if err := rows.Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.To, &m.Sequence, &m.Kind, &created, &visible); err != nil {
+				rows.Close()
+				return VisibleMessages{}, err
+			}
+			examined++
+			result.Cursor = m.Sequence
+			if !visible || (skipSelf && m.Kind == "message" && m.SenderID == participantID) {
+				continue
+			}
+			m.CreatedAt = fromNanos(created)
+			result.Messages = append(result.Messages, m)
+			if len(result.Messages) == limit {
+				break
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return VisibleMessages{}, err
+		}
+		if err := rows.Close(); err != nil {
+			return VisibleMessages{}, err
+		}
+		if examined < pageSize {
+			break
+		}
 	}
-	return messages, rows.Err()
+	return result, nil
 }
 
 func (s *sqliteStore) CloseRoom(ctx context.Context, roomID, participantID, messageID string) (model.Message, error) {

@@ -44,6 +44,11 @@ type AppendParams struct {
 	Kind                                                model.MessageKind
 }
 
+type VisibleMessages struct {
+	Messages []model.Message
+	Cursor   int64
+}
+
 type Store interface {
 	CreateRoom(context.Context, CreateRoomParams) (CreatedRoom, error)
 	ClaimInvite(context.Context, string, string) (ClaimResult, error)
@@ -51,7 +56,7 @@ type Store interface {
 	GetRoom(context.Context, string) (model.Room, error)
 	Participants(context.Context, string) ([]model.Participant, error)
 	Append(context.Context, AppendParams) (model.Message, error)
-	MessagesAfter(context.Context, string, int64, int) ([]model.Message, error)
+	MessagesAfter(context.Context, string, string, int64, int, bool) (VisibleMessages, error)
 	CloseRoom(context.Context, string, string, string) (model.Message, error)
 	DeleteExpired(context.Context, time.Time) (int64, error)
 	Ping(context.Context) error

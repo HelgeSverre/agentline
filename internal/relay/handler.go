@@ -181,7 +181,8 @@ func (h *handler) createRoom(w http.ResponseWriter, r *http.Request) {
 			ttl = h.config.MaxTTL
 		}
 	}
-	created, err := h.store.CreateRoom(r.Context(), store.CreateRoomParams{Name: in.Name, CreatorName: in.CreatorName, TTL: ttl, MaxParticipants: 2})
+	maxParticipants := 2
+	created, err := h.store.CreateRoom(r.Context(), store.CreateRoomParams{Name: in.Name, CreatorName: in.CreatorName, TTL: ttl, MaxParticipants: &maxParticipants})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -256,19 +257,20 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) messages(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authorize(w, r); !ok {
+	p, ok := h.authorize(w, r)
+	if !ok {
 		return
 	}
 	after, ok := queryInt(w, r, "after", 0)
 	if !ok {
 		return
 	}
-	messages, err := h.store.MessagesAfter(r.Context(), r.PathValue("id"), after, 1000)
+	visible, err := h.store.MessagesAfter(r.Context(), r.PathValue("id"), p.ID, after, 1000, false)
 	if err != nil {
 		h.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": messages})
+	writeJSON(w, http.StatusOK, map[string]any{"messages": visible.Messages})
 }
 
 func (h *handler) done(w http.ResponseWriter, r *http.Request) {
@@ -296,7 +298,8 @@ func (h *handler) done(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) wait(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authorize(w, r); !ok {
+	p, ok := h.authorize(w, r)
+	if !ok {
 		return
 	}
 	after, ok := queryInt(w, r, "after", 0)
@@ -315,13 +318,14 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request) {
 	deadline := time.NewTimer(duration)
 	defer deadline.Stop()
 	for {
-		messages, err := h.store.MessagesAfter(r.Context(), r.PathValue("id"), after, 1)
+		visible, err := h.store.MessagesAfter(r.Context(), r.PathValue("id"), p.ID, after, 1, true)
 		if err != nil {
 			h.fail(w, err)
 			return
 		}
-		if len(messages) > 0 {
-			m := messages[0]
+		after = visible.Cursor
+		if len(visible.Messages) > 0 {
+			m := visible.Messages[0]
 			if m.Kind == "done" {
 				writeJSON(w, http.StatusOK, map[string]any{"status": "done", "ended_by": m.SenderName, "sequence": m.Sequence})
 			} else {
@@ -340,13 +344,14 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request) {
 		}
 		ch, unsubscribe := h.subscribe(room.ID)
 		// Recheck after subscribing so an append between the query and subscription cannot be missed.
-		messages, err = h.store.MessagesAfter(r.Context(), room.ID, after, 1)
+		visible, err = h.store.MessagesAfter(r.Context(), room.ID, p.ID, after, 1, true)
 		if err != nil {
 			unsubscribe()
 			h.fail(w, err)
 			return
 		}
-		if len(messages) > 0 {
+		after = visible.Cursor
+		if len(visible.Messages) > 0 {
 			unsubscribe()
 			continue
 		}
