@@ -297,6 +297,14 @@ func (s *sqliteStore) append(ctx context.Context, p AppendParams, closeRoom bool
 	} else if err != nil {
 		return model.Message{}, err
 	}
+	if p.To != "" {
+		var exists int
+		if err = tx.QueryRowContext(ctx, `SELECT 1 FROM participants WHERE room_id=? AND id=?`, p.RoomID, p.To).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+			return model.Message{}, ErrInvalid
+		} else if err != nil {
+			return model.Message{}, err
+		}
+	}
 	var sequence int64
 	if err = tx.QueryRowContext(ctx, `SELECT next_sequence FROM rooms WHERE id=?`, p.RoomID).Scan(&sequence); err != nil {
 		return model.Message{}, err
@@ -305,8 +313,11 @@ func (s *sqliteStore) append(ctx context.Context, p AppendParams, closeRoom bool
 		return model.Message{}, ErrEventLimit
 	}
 	now := s.now().UTC()
-	message := model.Message{ID: p.MessageID, RoomID: p.RoomID, SenderID: p.ParticipantID, SenderName: senderName, Body: p.Body, ReplyTo: p.ReplyTo, Sequence: sequence, Kind: p.Kind, CreatedAt: now}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(id,room_id,sequence,sender_id,kind,body,reply_to,created_at) VALUES(?,?,?,?,?,?,?,?)`, message.ID, message.RoomID, sequence, message.SenderID, message.Kind, message.Body, message.ReplyTo, nanos(now)); err != nil {
+	message := model.Message{ID: p.MessageID, RoomID: p.RoomID, SenderID: p.ParticipantID, SenderName: senderName, Body: p.Body, ReplyTo: p.ReplyTo, To: p.To, Sequence: sequence, Kind: p.Kind, CreatedAt: now}
+	if closeRoom {
+		message.To = ""
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO messages(id,room_id,sequence,sender_id,recipient_id,kind,body,reply_to,created_at) VALUES(?,?,?,?,?,?,?,?,?)`, message.ID, message.RoomID, sequence, message.SenderID, nullIfEmpty(message.To), message.Kind, message.Body, message.ReplyTo, nanos(now)); err != nil {
 		return model.Message{}, err
 	}
 	if closeRoom {
@@ -327,13 +338,14 @@ func sameMessage(existing model.Message, retry AppendParams) bool {
 		existing.SenderID == retry.ParticipantID &&
 		existing.Kind == retry.Kind &&
 		existing.Body == retry.Body &&
-		existing.ReplyTo == retry.ReplyTo
+		existing.ReplyTo == retry.ReplyTo &&
+		existing.To == retry.To
 }
 
 func findMessage(ctx context.Context, q queryer, id string) (model.Message, bool, error) {
 	var m model.Message
 	var created int64
-	err := q.QueryRowContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.id=?`, id).Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.Sequence, &m.Kind, &created)
+	err := q.QueryRowContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.id=?`, id).Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.To, &m.Sequence, &m.Kind, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Message{}, false, nil
 	}
@@ -351,7 +363,7 @@ func (s *sqliteStore) MessagesAfter(ctx context.Context, roomID string, sequence
 	if limit <= 0 {
 		return []model.Message{}, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.room_id=? AND m.sequence>? ORDER BY m.sequence LIMIT ?`, roomID, sequence, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.room_id=? AND m.sequence>? ORDER BY m.sequence LIMIT ?`, roomID, sequence, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +372,7 @@ func (s *sqliteStore) MessagesAfter(ctx context.Context, roomID string, sequence
 	for rows.Next() {
 		var m model.Message
 		var created int64
-		if err := rows.Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.Sequence, &m.Kind, &created); err != nil {
+		if err := rows.Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.To, &m.Sequence, &m.Kind, &created); err != nil {
 			return nil, err
 		}
 		m.CreatedAt = fromNanos(created)
@@ -385,3 +397,9 @@ func (s *sqliteStore) Ping(ctx context.Context) error { return s.db.PingContext(
 func (s *sqliteStore) Close() error                   { return s.db.Close() }
 func nanos(t time.Time) int64                         { return t.UnixNano() }
 func fromNanos(n int64) time.Time                     { return time.Unix(0, n).UTC() }
+func nullIfEmpty(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}

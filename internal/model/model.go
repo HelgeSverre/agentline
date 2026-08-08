@@ -29,6 +29,7 @@ type Message struct {
 	SenderName string      `json:"sender_name"`
 	Body       string      `json:"body"`
 	ReplyTo    string      `json:"reply_to,omitempty"`
+	To         string      `json:"to,omitempty"`
 	Sequence   int64       `json:"sequence"`
 	Kind       MessageKind `json:"kind"`
 	CreatedAt  time.Time   `json:"created_at"`

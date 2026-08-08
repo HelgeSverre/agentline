@@ -40,8 +40,8 @@ type ClaimResult struct {
 }
 
 type AppendParams struct {
-	RoomID, ParticipantID, MessageID, Body, ReplyTo string
-	Kind                                            model.MessageKind
+	RoomID, ParticipantID, MessageID, Body, ReplyTo, To string
+	Kind                                                model.MessageKind
 }
 
 type Store interface {

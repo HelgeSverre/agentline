@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -283,6 +284,39 @@ func TestReusableInviteCreatesDistinctParticipants(t *testing.T) {
 	}
 }
 
+func TestParticipantsListsRoomMembersDirectly(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimInvite(ctx, created.InviteToken, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	participants, err := s.Participants(ctx, created.Room.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []model.Participant{created.Creator, claimed.Participant}
+	slices.SortFunc(want, func(a, b model.Participant) int {
+		if joined := a.JoinedAt.Compare(b.JoinedAt); joined != 0 {
+			return joined
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	if len(participants) != len(want) {
+		t.Fatalf("participants=%+v", participants)
+	}
+	for i := range want {
+		if participants[i] != want[i] {
+			t.Fatalf("participant[%d]=%+v, want %+v", i, participants[i], want[i])
+		}
+	}
+}
+
 func TestUnlimitedRoomAcceptsSeveralParticipants(t *testing.T) {
 	s, _, _ := openTestStore(t)
 	ctx := context.Background()
@@ -411,6 +445,94 @@ func TestAppendOrderingIdempotencyLimitAndDoneHistory(t *testing.T) {
 	}
 	if _, err := s.CloseRoom(ctx, created.Room.ID, claimed.Participant.ID, "another"); !errors.Is(err, ErrRoomClosed) {
 		t.Fatalf("second done: %v", err)
+	}
+}
+
+func TestAppendBroadcastAndPrivateRecipient(t *testing.T) {
+	s, _, path := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := s.ClaimInvite(ctx, created.InviteToken, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimInvite(ctx, created.InviteToken, "carol"); err != nil {
+		t.Fatal(err)
+	}
+
+	broadcast, err := s.Append(ctx, AppendParams{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "broadcast", Body: "hello", Kind: "message"})
+	if err != nil || broadcast.To != "" {
+		t.Fatalf("broadcast=%+v err=%v", broadcast, err)
+	}
+	private, err := s.Append(ctx, AppendParams{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "private", To: bob.Participant.ID, Body: "secret", Kind: "message"})
+	if err != nil || private.To != bob.Participant.ID {
+		t.Fatalf("private=%+v err=%v", private, err)
+	}
+	messages, err := s.MessagesAfter(ctx, created.Room.ID, 0, 10)
+	if err != nil || len(messages) != 2 || messages[0].To != "" || messages[1].To != bob.Participant.ID {
+		t.Fatalf("messages=%+v err=%v", messages, err)
+	}
+	if _, err := s.CloseRoom(ctx, created.Room.ID, created.Creator.ID, "done"); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, id := range []string{"broadcast", "done"} {
+		var recipient sql.NullString
+		if err := db.QueryRow(`SELECT recipient_id FROM messages WHERE id=?`, id).Scan(&recipient); err != nil || recipient.Valid {
+			t.Fatalf("recipient for %q=%v err=%v", id, recipient, err)
+		}
+	}
+}
+
+func TestAppendRejectsUnknownAndCrossRoomRecipient(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	first, err := s.CreateRoom(ctx, CreateRoomParams{Name: "first", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateRoom(ctx, CreateRoomParams{Name: "second", CreatorName: "mallory", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, recipient := range []string{"unknown", second.Creator.ID} {
+		if _, err := s.Append(ctx, AppendParams{RoomID: first.Room.ID, ParticipantID: first.Creator.ID, MessageID: "rejected-" + recipient, To: recipient, Body: "secret", Kind: "message"}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("recipient %q: %v", recipient, err)
+		}
+	}
+	accepted, err := s.Append(ctx, AppendParams{RoomID: first.Room.ID, ParticipantID: first.Creator.ID, MessageID: "accepted", Body: "hello", Kind: "message"})
+	if err != nil || accepted.Sequence != 1 {
+		t.Fatalf("accepted=%+v err=%v", accepted, err)
+	}
+	messages, err := s.MessagesAfter(ctx, first.Room.ID, 0, 10)
+	if err != nil || len(messages) != 1 {
+		t.Fatalf("messages=%+v err=%v", messages, err)
+	}
+}
+
+func TestAppendIdempotencyIncludesRecipient(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	created, claimed := createAndClaim(t, s)
+	ctx := context.Background()
+	p := AppendParams{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "private", To: claimed.Participant.ID, Body: "secret", Kind: "message"}
+	first, err := s.Append(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry, err := s.Append(ctx, p); err != nil || retry != first {
+		t.Fatalf("retry=%+v err=%v", retry, err)
+	}
+	p.To = ""
+	if _, err := s.Append(ctx, p); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed recipient: %v", err)
 	}
 }
 
