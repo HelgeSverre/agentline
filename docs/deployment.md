@@ -1,6 +1,18 @@
 # Deploy Agentline to Fly.io
 
-**Status:** Fly configuration implemented; live deployment pending authentication
+**Status:** Live on Fly.io; `agentline.dev` DNS pending
+
+## Current deployment
+
+- Fly app: `agentline`
+- Region: `arn`
+- Machine count: 1
+- Volume: `agentline_data`, 1 GB, encrypted
+- Release: `v0.1.1`
+- Fly hostname: `https://agentline.fly.dev`
+- Canonical hostname: `https://agentline.dev` after DNS and certificate validation
+
+Verified on 2026-08-08: health checks, anonymous checksum-verified installation, room creation, non-destructive invite instructions, one-use claim, bidirectional messaging, structured `done`, rejected writes after `done`, and a full 60-second wait through Fly Proxy.
 
 The MVP runs as one Fly Machine with one persistent Fly Volume. Fly Proxy terminates HTTPS and forwards HTTP to Agentline. SQLite stays on the mounted volume.
 
