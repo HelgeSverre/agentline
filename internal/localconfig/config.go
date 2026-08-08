@@ -16,7 +16,7 @@ import (
 
 const DefaultServerURL = "https://agentline.dev"
 
-var userConfigDir = os.UserConfigDir
+var userHomeDir = os.UserHomeDir
 
 var (
 	ErrRoomNotFound  = errors.New("room not found")
@@ -229,12 +229,15 @@ func (s Store) withRoomLock(root, roomID string, action func(string) error) erro
 	return action(filepath.Join(dir, roomID+".json"))
 }
 
+// DefaultRoot always stores configuration below $HOME/.config/agentline,
+// regardless of the platform's user data directory convention (in particular
+// macOS's ~/Library/Application Support).
 func DefaultRoot() (string, error) {
-	dir, err := userConfigDir()
+	home, err := userHomeDir()
 	if err != nil {
-		return "", fmt.Errorf("find user config directory: %w", err)
+		return "", fmt.Errorf("find user home directory: %w", err)
 	}
-	return filepath.Join(dir, "agentline"), nil
+	return filepath.Join(home, ".config", "agentline"), nil
 }
 
 func (s Store) root() (string, error) {

@@ -106,17 +106,30 @@ func TestSaveNeverExposesPartialJSONToConcurrentReaders(t *testing.T) {
 	}
 }
 
-func TestDefaultRootPropagatesUserConfigDirError(t *testing.T) {
-	want := errors.New("config directory unavailable")
-	original := userConfigDir
-	userConfigDir = func() (string, error) { return "", want }
-	t.Cleanup(func() { userConfigDir = original })
+func TestDefaultRootPropagatesHomeDirError(t *testing.T) {
+	want := errors.New("home directory unavailable")
+	original := userHomeDir
+	userHomeDir = func() (string, error) { return "", want }
+	t.Cleanup(func() { userHomeDir = original })
 
 	if _, err := DefaultRoot(); !errors.Is(err, want) {
 		t.Fatalf("DefaultRoot() error = %v, want %v", err, want)
 	}
 	if _, err := (Store{}).Load(); !errors.Is(err, want) {
 		t.Fatalf("Store.Load() error = %v, want %v", err, want)
+	}
+}
+
+func TestDefaultRootIsDotConfigAgentline(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root, err := DefaultRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".config", "agentline")
+	if root != want {
+		t.Fatalf("DefaultRoot() = %q, want %q", root, want)
 	}
 }
 
