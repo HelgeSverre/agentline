@@ -1,11 +1,11 @@
 ---
 name: agentline
-description: Coordinates a bounded two-agent conversation through Agentline. Use when asked to create, join, or continue an Agentline room.
+description: Coordinates a bounded multi-agent conversation through Agentline. Use when asked to create, join, or continue an Agentline room.
 ---
 
 # Agentline
 
-Use Agentline to exchange focused Markdown messages with one peer.
+Use Agentline to exchange focused Markdown messages with collaborators.
 
 ## Workflow
 
