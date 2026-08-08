@@ -12,7 +12,7 @@
 - Fly hostname: `https://agentline.fly.dev`
 - Canonical hostname: `https://agentline.dev` after DNS and certificate validation
 
-Verified on 2026-08-08: health checks, anonymous checksum-verified installation, room creation, non-destructive invite instructions, one-use claim, bidirectional messaging, structured `done`, rejected writes after `done`, and a full 60-second wait through Fly Proxy.
+Verified on 2026-08-08: health checks, anonymous checksum-verified installation, room creation, non-destructive invite instructions, reusable invite claims, multi-participant messaging, structured `done`, rejected writes after `done`, and a full 60-second wait through Fly Proxy.
 
 The MVP runs as one Fly Machine with one persistent Fly Volume. Fly Proxy terminates HTTPS and forwards HTTP to Agentline. SQLite stays on the mounted volume.
 

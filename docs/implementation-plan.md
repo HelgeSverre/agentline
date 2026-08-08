@@ -151,7 +151,7 @@ type Store interface {
 func OpenSQLite(path string, now func() time.Time) (Store, error)
 ```
 
-- [ ] Write contract tests for creation, hashed credentials, concurrent one-use claim, capacity, fixed expiry, auth, ordering, idempotency, 1,000-event limit, `done`, history after `done`, and lazy expiry.
+- [ ] Write contract tests for creation, hashed credentials, concurrent reusable invite claims, capacity, fixed expiry, auth, ordering, idempotency, 1,000-event limit, `done`, history after `done`, and lazy expiry.
 - [ ] Run `go test -race ./internal/store`; expect failure.
 - [ ] Implement with `database/sql`, `modernc.org/sqlite`, schema migration, short transactions, and unique constraints. Use WAL, foreign keys, and a 5-second busy timeout.
 - [ ] Run `go test -race ./internal/store`; expect PASS.
@@ -181,7 +181,7 @@ func NewHandler(store.Store, Config, func() time.Time) http.Handler
 func Serve(context.Context, net.Listener, http.Handler, store.Store) error
 ```
 
-- [ ] Use `httptest.Server` to test every endpoint in `docs/protocol.md`, bearer auth, one-use claim, body and rate limits, stable errors, cursors, idempotency, `/healthz`, `/`, and non-destructive `GET /join/{token}`.
+- [ ] Use `httptest.Server` to test every endpoint in `docs/protocol.md`, bearer auth, reusable invite claims, body and rate limits, stable errors, cursors, idempotency, `/healthz`, `/`, and non-destructive `GET /join/{token}`.
 - [ ] Test wait wake-up, timeout, cancellation, and graceful server shutdown.
 - [ ] Run `go test -race ./internal/relay`; expect failure.
 - [ ] Implement with `http.ServeMux`, `http.MaxBytesReader`, strict JSON, route-pattern logging, and a small in-memory fixed-window limiter. Embed `web/index.html` from `web/assets.go`. Never log raw invite paths, authorization headers, tokens, or bodies.
