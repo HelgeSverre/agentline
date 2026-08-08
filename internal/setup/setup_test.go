@@ -152,14 +152,23 @@ func TestSkillSourceIsCanonical(t *testing.T) {
 }
 
 func TestBuildPlanRefusesUnownedArtifacts(t *testing.T) {
-	for _, target := range []string{"claude", "amp", "pi", "opencode", "mcp"} {
+	for _, target := range []string{"claude", "opencode"} {
 		t.Run(target, func(t *testing.T) {
 			home := t.TempDir()
-			plan, err := BuildPlan(target, home, "/opt/agentline", false)
+			_, err := BuildPlan(target, home, "/opt/agentline", false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := plan.Changes[0].Path
+			path := ""
+			for _, spec := range targetArtifacts(target, home) {
+				if spec.unit != "file" {
+					path = spec.path
+					break
+				}
+			}
+			if path == "" {
+				t.Fatal("missing structured artifact")
+			}
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -206,7 +215,7 @@ func TestManifestPermitsExecutableRelocationAndRejectsOwnedUnitMutation(t *testi
 	}
 }
 
-func TestBuildPlanRefusesByteEqualUnmanifestedArtifact(t *testing.T) {
+func TestBuildPlanAdoptsUnmanifestedSkill(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".agents/skills/agentline/SKILL.md")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -215,8 +224,15 @@ func TestBuildPlanRefusesByteEqualUnmanifestedArtifact(t *testing.T) {
 	if err := os.WriteFile(path, []byte(sharedSkill), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildPlan("pi", home, "/opt/agentline", false); err == nil {
-		t.Fatal("accepted byte-equal unmanifested skill")
+	plan, err := BuildPlan("pi", home, "/opt/agentline", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(configRoot(home), "agentline", "setup-ownership.json")); err != nil {
+		t.Fatalf("ownership manifest: %v", err)
 	}
 }
 

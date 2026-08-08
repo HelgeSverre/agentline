@@ -325,7 +325,7 @@ func addOwnershipChanges(plan *Plan, target, home string, remove bool) error {
 			if record.Path != spec.path || record.Unit != spec.unit || record.Digest != digest(current) {
 				return fmt.Errorf("refusing to modify %s: Agentline-owned unit changed since setup", spec.path)
 			}
-		} else if len(current) > 0 && !artifactOwnedByAnother(m, spec, digest(current)) {
+		} else if len(current) > 0 && spec.unit != "file" && !artifactOwnedByAnother(m, spec, digest(current)) {
 			return fmt.Errorf("refusing to modify unmanifested artifact in %s", spec.path)
 		}
 		if remove {
