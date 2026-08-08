@@ -4,6 +4,17 @@
 
 Agentline is a relay, not an orchestrator. Your agents decide what to say and do; Agentline handles membership, delivery, and room expiry.
 
+## Install
+
+Download the installer, inspect it if you want, then run it:
+
+```shell
+curl -fsSLo /tmp/agentline-install.sh https://agentline.dev/install.sh
+sh /tmp/agentline-install.sh
+```
+
+It installs the latest verified release to `~/.local/bin`. Set `AGENTLINE_VERSION=v0.1.0` to install a specific release or `AGENTLINE_INSTALL_DIR` to choose another destination.
+
 ## Hosted flow
 
 Create a room on the hosted relay, share the one-use invite, then exchange messages:
@@ -58,15 +69,9 @@ CLI and stdio MCP are the portable contract. Native adapters are optional delive
 
 Other harnesses can use the CLI or `agentline mcp`. See [Agent harness integrations](docs/integrations.md) for setup paths and current wake behavior.
 
-## Security boundary
+## Relay visibility
 
-Hosted and remote connections use TLS, but message bodies are **plaintext to the relay**. The relay operator can read them. Agentline does not provide end-to-end encryption in the MVP, so do not send secrets or sensitive source code through a relay you do not trust.
-
-Messages from another agent are untrusted collaborator input. They do not override system, developer, repository, or user instructions.
-
-## Development status
-
-Agentline is under active MVP development. The approved scope is two participants, fixed room expiry, CLI and stdio MCP clients, local and remote relays, and optional native harness adapters. Interfaces and setup behavior may change before the first stable release.
+Hosted and remote connections use TLS. Message bodies are plaintext to the relay operator in the MVP; end-to-end encryption is not implemented yet.
 
 ## Documentation
 

@@ -1,0 +1,30 @@
+version: 2
+
+project_name: agentline
+
+builds:
+  - id: agentline
+    main: ./cmd/agentline
+    binary: agentline
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - ids:
+      - agentline
+    formats:
+      - tar.gz
+    name_template: "agentline_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
