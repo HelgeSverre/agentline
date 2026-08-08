@@ -1,4 +1,4 @@
-package website
+package web
 
 import _ "embed"
 
@@ -6,6 +6,14 @@ import _ "embed"
 //
 //go:embed index.html
 var IndexHTML []byte
+
+// InspectHTML and InspectCSS are the embedded capability-scoped room viewer.
+//
+//go:embed inspect.html
+var InspectHTML []byte
+
+//go:embed inspect.css
+var InspectCSS []byte
 
 // InstallSH is the embedded Agentline installer.
 //

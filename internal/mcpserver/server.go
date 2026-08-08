@@ -38,6 +38,7 @@ type createOutput struct {
 	Room        model.Room        `json:"room"`
 	Participant model.Participant `json:"participant"`
 	InviteURL   string            `json:"invite_url"`
+	InspectURL  string            `json:"inspect_url"`
 }
 
 type joinInput struct {
@@ -140,7 +141,7 @@ func (s service) create(ctx context.Context, _ *mcp.CallToolRequest, in createIn
 	if err := s.deps.Config.SaveRoom(credential); err != nil {
 		return nil, createOutput{}, err
 	}
-	return &mcp.CallToolResult{}, createOutput{Room: created.Room, Participant: created.Participant, InviteURL: created.InviteURL}, nil
+	return &mcp.CallToolResult{}, createOutput{Room: created.Room, Participant: created.Participant, InviteURL: created.InviteURL, InspectURL: created.InspectURL}, nil
 }
 
 func (s service) join(ctx context.Context, _ *mcp.CallToolRequest, in joinInput) (*mcp.CallToolResult, joinOutput, error) {

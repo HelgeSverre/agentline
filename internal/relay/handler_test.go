@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -93,14 +94,14 @@ func TestUnauthorizedSendDoesNotConsumeQuota(t *testing.T) {
 
 func TestLogsDoNotContainSecrets(t *testing.T) {
 	f := newFixture(t)
-	roomID, token, invite := f.room()
+	roomID, token, invite, inspect := f.roomWithInspect()
 	var logs bytes.Buffer
 	old := log.Writer()
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(old) })
 	f.request(http.MethodGet, "/join/"+invite, "", nil)
 	f.request(http.MethodGet, "/v1/rooms/"+roomID, token, nil)
-	for _, secret := range []string{invite, token, roomID} {
+	for _, secret := range []string{invite, inspect, token, roomID} {
 		if strings.Contains(logs.String(), secret) {
 			t.Fatalf("logs leaked secret %q: %s", secret, logs.String())
 		}
@@ -144,6 +145,17 @@ func TestJoinRepresentationsDoNotClaimInvite(t *testing.T) {
 			}
 			if !strings.Contains(string(body), "curl -fsSL https://relay.example/install.sh | sh") {
 				t.Errorf("join instructions do not pipe the installer to sh: %q", body)
+			}
+			for _, instruction := range []string{
+				"export PATH=",
+				"$HOME/.local/bin:$PATH",
+				"agentline wait --timeout 60s",
+				"agentline send",
+				"agentline done",
+			} {
+				if !strings.Contains(string(body), instruction) {
+					t.Errorf("join instructions missing %q: %q", instruction, body)
+				}
 			}
 			for name, want := range map[string]string{
 				"Cache-Control":          "no-store",
@@ -224,12 +236,111 @@ func (f *fixture) request(method, path, token string, body any) (*http.Response,
 }
 
 func (f *fixture) room() (roomID, token, invite string) {
+	roomID, token, invite, _ = f.roomWithInspect()
+	return roomID, token, invite
+}
+
+func (f *fixture) roomWithInspect() (roomID, token, invite, inspect string) {
 	f.t.Helper()
 	resp, got := f.request(http.MethodPost, "/v1/rooms", "", map[string]any{"name": "amber-fox", "creator_name": "alice", "ttl_seconds": 600})
 	if resp.StatusCode != http.StatusCreated {
 		f.t.Fatalf("create: %d %#v", resp.StatusCode, got)
 	}
-	return got["room"].(map[string]any)["id"].(string), got["participant_token"].(string), got["invite_token"].(string)
+	inspectURL, err := url.Parse(got["inspect_url"].(string))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	inspectParts := strings.Split(inspectURL.Path, "/")
+	if len(inspectParts) != 3 || inspectParts[1] != "inspect" || inspectParts[2] == "" {
+		f.t.Fatalf("unexpected inspection URL %q", inspectURL.String())
+	}
+	return got["room"].(map[string]any)["id"].(string), got["participant_token"].(string), got["invite_token"].(string), inspectParts[2]
+}
+
+func (f *fixture) inspectRoom() (roomID, token, inspectPath string) {
+	f.t.Helper()
+	resp, got := f.request(http.MethodPost, "/v1/rooms", "", map[string]any{"name": "observed", "creator_name": "alice", "ttl_seconds": 600})
+	if resp.StatusCode != http.StatusCreated {
+		f.t.Fatalf("create: %d %#v", resp.StatusCode, got)
+	}
+	inspectURL, err := url.Parse(got["inspect_url"].(string))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return got["room"].(map[string]any)["id"].(string), got["participant_token"].(string), inspectURL.Path
+}
+
+func TestInspectorRendersEscapedPersistedTranscript(t *testing.T) {
+	f := newFixture(t)
+	roomID, token, inspectPath := f.inspectRoom()
+	resp, _ := f.request(http.MethodPost, "/v1/rooms/"+roomID+"/messages", token, map[string]string{"id": "message", "body": "<script>alert('unsafe')</script>"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("send status=%d", resp.StatusCode)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, f.server.URL+inspectPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(page.Body)
+	page.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if page.StatusCode != http.StatusOK || !strings.Contains(text, "&lt;script&gt;alert(&#39;unsafe&#39;)&lt;/script&gt;") || strings.Contains(text, "<script>alert('unsafe')</script>") || !strings.Contains(text, "datastar@v1.0.2") || !strings.Contains(text, inspectPath+"/events") {
+		t.Fatalf("status=%d page=%q", page.StatusCode, text)
+	}
+	for name, want := range map[string]string{"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff", "X-Robots-Tag": "noindex, noarchive"} {
+		if got := page.Header.Get(name); got != want {
+			t.Errorf("%s=%q want %q", name, got, want)
+		}
+	}
+
+	resp, failure := f.request(http.MethodGet, "/inspect/not-a-capability", "", nil)
+	assertError(t, resp, failure, http.StatusNotFound, "inspect_not_found")
+	css, err := http.Get(f.server.URL + "/assets/agentline-inspect.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssBody, _ := io.ReadAll(css.Body)
+	css.Body.Close()
+	if css.StatusCode != http.StatusOK || !strings.Contains(css.Header.Get("Content-Type"), "text/css") || !strings.Contains(string(cssBody), "@layer") {
+		t.Fatalf("css status=%d type=%q", css.StatusCode, css.Header.Get("Content-Type"))
+	}
+}
+
+func TestInspectorStreamSendsDatastarSnapshot(t *testing.T) {
+	f := newFixture(t)
+	roomID, token, inspectPath := f.inspectRoom()
+	resp, _ := f.request(http.MethodPost, "/v1/rooms/"+roomID+"/messages", token, map[string]string{"id": "message", "body": "persisted transcript"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("send status=%d", resp.StatusCode)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.server.URL+inspectPath+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := make(chan []byte, 1)
+	go func() { body, _ := io.ReadAll(stream.Body); data <- body }()
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	body := string(<-data)
+	stream.Body.Close()
+	if stream.StatusCode != http.StatusOK || !strings.Contains(stream.Header.Get("Content-Type"), "text/event-stream") || !strings.Contains(body, "event: datastar-patch-elements") || !strings.Contains(body, "data: selector #messages-area") || !strings.Contains(body, "persisted transcript") {
+		t.Fatalf("status=%d type=%q stream=%q", stream.StatusCode, stream.Header.Get("Content-Type"), body)
+	}
 }
 
 func TestRoomLifecycleAndEndpoints(t *testing.T) {
@@ -465,6 +576,7 @@ func TestStableStoreErrorMappings(t *testing.T) {
 		code   string
 	}{
 		{store.ErrUnauthorized, http.StatusUnauthorized, "unauthorized"},
+		{store.ErrInspectInvalid, http.StatusNotFound, "inspect_not_found"},
 		{store.ErrInviteClaimed, http.StatusConflict, "invite_already_claimed"},
 		{store.ErrInviteInvalid, http.StatusNotFound, "invite_invalid"},
 		{store.ErrRoomNotFound, http.StatusNotFound, "room_not_found"},

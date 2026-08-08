@@ -1,0 +1,62 @@
+@layer reset, base, components, utilities;
+
+@layer reset {
+  *, *::before, *::after { box-sizing: border-box; }
+  body, h1, h2, p, ol, dl, dd { margin: 0; }
+  ol { padding: 0; }
+}
+
+@layer base {
+  :root {
+    color-scheme: light dark;
+    --canvas: light-dark(oklch(97% 0.012 70), oklch(15% 0.012 70));
+    --surface: light-dark(oklch(100% 0 0), oklch(20% 0.012 70));
+    --ink: light-dark(oklch(24% 0.025 55), oklch(93% 0.015 70));
+    --muted: light-dark(oklch(47% 0.02 55), oklch(70% 0.02 70));
+    --line: light-dark(oklch(84% 0.018 65), oklch(33% 0.015 70));
+    --accent: light-dark(oklch(55% 0.13 32), oklch(76% 0.11 38));
+    --live: light-dark(oklch(55% 0.15 145), oklch(73% 0.14 145));
+    --radius: 1rem;
+  }
+
+  body { min-block-size: 100dvb; background: var(--canvas); color: var(--ink); font: 1rem/1.55 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
+  h1, h2 { font-family: ui-sans-serif, system-ui, sans-serif; text-wrap: balance; }
+  h1 { font-size: clamp(2rem, 7cqi, 3.4rem); line-height: 1.05; letter-spacing: -0.045em; }
+  h2 { font-size: clamp(1.1rem, 3cqi, 1.35rem); }
+}
+
+@layer components {
+  .inspector { container-type: inline-size; inline-size: min(100% - 2rem, 62rem); margin-inline: auto; padding-block: clamp(1.5rem, 6cqi, 4.5rem); }
+  .room-header { display: flex; gap: 1.5rem; align-items: start; justify-content: space-between; border-block-end: 1px solid var(--line); padding-block-end: 1.75rem; }
+  .eyebrow { color: var(--accent); font-size: .78rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+  .room-subtitle, .connection, .empty-state { color: var(--muted); }
+  .connection { align-items: center; display: flex; flex: none; font-size: .85rem; gap: .5rem; padding-block: .35rem; }
+  .connection-dot { background: var(--live); border-radius: 999px; block-size: .55rem; inline-size: .55rem; }
+  .room-facts { display: flex; flex-wrap: wrap; gap: 1.25rem 3.5rem; padding-block: 1.25rem; }
+  .room-facts div { display: grid; gap: .08rem; }
+  .room-facts dt { color: var(--muted); font-size: .78rem; }
+  .room-facts dd { font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 650; }
+  .transcript { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 .75rem 2rem oklch(20% .02 55 / .06); overflow: clip; }
+  .transcript-heading { align-items: center; border-block-end: 1px solid var(--line); display: flex; justify-content: space-between; padding: 1rem 1.2rem; }
+  .follow-control { align-items: center; color: var(--muted); display: flex; font-size: .85rem; gap: .5rem; }
+  .follow-control input { accent-color: var(--accent); }
+  .messages { list-style: none; }
+  .message { display: grid; gap: .45rem; padding: 1.2rem; }
+  .message:not(:first-child) { border-block-start: 1px solid var(--line); }
+  .message-meta { align-items: baseline; display: flex; flex-wrap: wrap; gap: .5rem; }
+  .sender { font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 750; }
+  .timestamp { color: var(--muted); font-size: .78rem; }
+  .body { max-inline-size: 78ch; overflow-wrap: anywhere; text-wrap: pretty; white-space: pre-wrap; }
+  .done-body { color: var(--muted); font-style: italic; }
+  .empty-state { padding: 2.5rem 1.2rem; text-align: center; }
+  .messages-area:has(.message) .empty-state, #messages-area:has(.message) .empty-state { display: none; }
+
+  @container (width < 32rem) { .room-header { flex-direction: column; gap: .75rem; } .connection { padding-block: 0; } }
+}
+
+@layer utilities {
+  .skip-link { background: var(--surface); border: 1px solid var(--accent); border-radius: .4rem; color: var(--ink); inset-block-start: 1rem; inset-inline-start: 1rem; padding: .5rem .75rem; position: fixed; transform: translateY(-200%); z-index: 1; }
+  .skip-link:focus { transform: translateY(0); }
+  :where(a, input):focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0s !important; } }
+}

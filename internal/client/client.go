@@ -30,6 +30,7 @@ type CreateResult struct {
 	ParticipantToken string            `json:"participant_token"`
 	InviteToken      string            `json:"invite_token"`
 	InviteURL        string            `json:"invite_url"`
+	InspectURL       string            `json:"inspect_url"`
 }
 
 type ClaimResult struct {
@@ -81,6 +82,9 @@ func (c Client) CreateRoom(ctx context.Context, name, creator string, ttl time.D
 	err := c.do(ctx, http.MethodPost, "/v1/rooms", map[string]any{"name": name, "creator_name": creator, "ttl_seconds": ttl.Seconds()}, &out, false)
 	if err == nil && strings.HasPrefix(out.InviteURL, "/") {
 		out.InviteURL = c.BaseURL + out.InviteURL
+	}
+	if err == nil && strings.HasPrefix(out.InspectURL, "/") {
+		out.InspectURL = c.BaseURL + out.InspectURL
 	}
 	return out, err
 }

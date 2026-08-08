@@ -21,7 +21,7 @@ func TestCreateAndClaimUseRelayShapes(t *testing.T) {
 			t.Fatalf("body = %#v", body)
 		}
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"room":{"id":"r1","name":"room"},"participant":{"id":"p1"},"participant_token":"secret","invite_token":"invite","invite_url":"https://relay.test/join/invite"}`))
+		w.Write([]byte(`{"room":{"id":"r1","name":"room"},"participant":{"id":"p1"},"participant_token":"secret","invite_token":"invite","invite_url":"https://relay.test/join/invite","inspect_url":"/inspect/observer"}`))
 	})
 	mux.HandleFunc("POST /v1/invites/invite/claim", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"room":{"id":"r1","name":"room"},"participant":{"id":"p2"},"participant_token":"joined"}`))
@@ -30,7 +30,7 @@ func TestCreateAndClaimUseRelayShapes(t *testing.T) {
 	defer s.Close()
 	c := New(s.URL, "", s.Client())
 	created, err := c.CreateRoom(context.Background(), "room", "alice", time.Hour)
-	if err != nil || created.ParticipantToken != "secret" || created.InviteURL == "" {
+	if err != nil || created.ParticipantToken != "secret" || created.InviteURL == "" || created.InspectURL != s.URL+"/inspect/observer" {
 		t.Fatalf("created=%+v err=%v", created, err)
 	}
 	claimed, err := c.ClaimInvite(context.Background(), s.URL+"/join/invite", "bob")

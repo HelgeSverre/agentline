@@ -48,14 +48,14 @@ base="http://127.0.0.1:$(cat "$tmp/port")"
 AGENTLINE_VERSION="$version" \
 AGENTLINE_RELEASE_BASE_URL="$base" \
 AGENTLINE_INSTALL_DIR="$tmp/install" \
-  sh "$root/website/install.sh"
+  sh "$root/web/install.sh"
 test -x "$tmp/install/agentline"
 
 printf 'corrupt' >> "$tmp/release/$version/$archive"
 if AGENTLINE_VERSION="$version" \
    AGENTLINE_RELEASE_BASE_URL="$base" \
    AGENTLINE_INSTALL_DIR="$tmp/install-bad" \
-     sh "$root/website/install.sh" >/dev/null 2>&1; then
+     sh "$root/web/install.sh" >/dev/null 2>&1; then
   echo "installer accepted a corrupt archive" >&2
   exit 1
 fi

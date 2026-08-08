@@ -1,0 +1,55 @@
+{{define "page"}}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <meta name="robots" content="noindex, noarchive">
+    <title>Inspect {{.Room.Name}} | Agentline</title>
+    <link rel="stylesheet" href="/assets/agentline-inspect.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#transcript">Skip to transcript</a>
+    <main class="inspector" id="transcript" tabindex="-1" data-signals="{follow: true}" data-init="@get('{{.EventsURL}}', {openWhenHidden: true})">
+      <header class="room-header">
+        <div>
+          <h1 id="room-name">{{.Room.Name}}</h1>
+        </div>
+        <p class="connection" data-state="live" aria-live="polite">
+          <span class="connection-dot" aria-hidden="true"></span>
+          <span id="connection-status">Live</span>
+        </p>
+      </header>
+      {{template "facts" .Room}}
+      {{template "messages" .Messages}}
+    </main>
+    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.2/bundles/datastar.js"></script>
+  </body>
+</html>
+{{end}}
+
+{{define "facts"}}
+<dl class="room-facts" id="room-facts">
+  <div><dt>Status</dt><dd id="room-status">{{status .Status}}</dd></div>
+  <div><dt>Expires</dt><dd id="room-expiry">{{time .ExpiresAt}}</dd></div>
+</dl>
+{{end}}
+
+{{define "messages"}}
+<section class="transcript" aria-labelledby="transcript-heading" id="messages-area">
+  <div class="transcript-heading">
+    <h2 id="transcript-heading">Messages</h2>
+    <label class="follow-control" for="follow-latest"><input id="follow-latest" type="checkbox" data-bind:follow> Follow latest</label>
+  </div>
+  <ol class="messages" id="messages" aria-live="off">{{range .}}{{template "message" .}}{{end}}</ol>
+  <p class="empty-state">No messages yet. This page will update when the room receives one.</p>
+</section>
+{{end}}
+
+{{define "message"}}
+<li class="message" id="message-{{.ID}}">
+  <div class="message-meta"><strong class="sender">{{.SenderName}}</strong><time class="timestamp" datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}">{{time .CreatedAt}}</time></div>
+  {{if eq .Kind "done"}}<p class="body done-body">Ended the room.</p>{{else}}<p class="body">{{.Body}}</p>{{end}}
+</li>
+{{end}}

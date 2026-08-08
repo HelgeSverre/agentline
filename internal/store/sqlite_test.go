@@ -55,7 +55,7 @@ func TestCreateRoomUsesFixedExpiryAndStoresOnlyHashes(t *testing.T) {
 	if created.Room.Status != "waiting_for_peer" || created.Room.CreatedAt != clock.now().UTC() || created.Room.ExpiresAt != clock.now().Add(2*time.Hour).UTC() {
 		t.Fatalf("unexpected room: %+v", created.Room)
 	}
-	if created.CreatorToken == "" || created.InviteToken == "" || created.CreatorToken == created.InviteToken {
+	if created.CreatorToken == "" || created.InviteToken == "" || created.InspectToken == "" || created.CreatorToken == created.InviteToken || created.CreatorToken == created.InspectToken || created.InviteToken == created.InspectToken {
 		t.Fatal("missing or shared credentials")
 	}
 
@@ -64,18 +64,43 @@ func TestCreateRoomUsesFixedExpiryAndStoresOnlyHashes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	var participantHash, inviteHash []byte
+	var participantHash, inviteHash, inspectHash []byte
 	if err := db.QueryRow(`SELECT token_hash FROM participants`).Scan(&participantHash); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT token_hash FROM invites`).Scan(&inviteHash); err != nil {
 		t.Fatal(err)
 	}
-	if string(participantHash) == created.CreatorToken || string(inviteHash) == created.InviteToken {
+	if err := db.QueryRow(`SELECT token_hash FROM inspectors`).Scan(&inspectHash); err != nil {
+		t.Fatal(err)
+	}
+	if string(participantHash) == created.CreatorToken || string(inviteHash) == created.InviteToken || string(inspectHash) == created.InspectToken {
 		t.Fatal("raw token stored")
 	}
-	if len(participantHash) != 32 || len(inviteHash) != 32 {
-		t.Fatalf("hash lengths = %d, %d", len(participantHash), len(inviteHash))
+	if len(participantHash) != 32 || len(inviteHash) != 32 || len(inspectHash) != 32 {
+		t.Fatalf("hash lengths = %d, %d, %d", len(participantHash), len(inviteHash), len(inspectHash))
+	}
+}
+
+func TestInspectReadsPersistedTranscriptUntilExpiry(t *testing.T) {
+	s, clock, _ := openTestStore(t)
+	created, claimed := createAndClaim(t, s)
+	if _, err := s.Append(context.Background(), AppendParams{RoomID: created.Room.ID, ParticipantID: created.Creator.ID, MessageID: "message", Body: "transcript", Kind: "message"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CloseRoom(context.Background(), created.Room.ID, claimed.Participant.ID, "done"); err != nil {
+		t.Fatal(err)
+	}
+	room, messages, err := s.Inspect(context.Background(), created.InspectToken)
+	if err != nil || room.Status != "done" || len(messages) != 2 || messages[0].Body != "transcript" || messages[1].Kind != "done" {
+		t.Fatalf("inspection room=%+v messages=%+v err=%v", room, messages, err)
+	}
+	if _, _, err := s.Inspect(context.Background(), "wrong"); !errors.Is(err, ErrInspectInvalid) {
+		t.Fatalf("invalid inspection token: %v", err)
+	}
+	clock.add(2 * time.Hour)
+	if _, _, err := s.Inspect(context.Background(), created.InspectToken); !errors.Is(err, ErrRoomExpired) {
+		t.Fatalf("expired inspection: %v", err)
 	}
 }
 

@@ -65,7 +65,7 @@ Two alternatives were rejected:
 
 The single Go binary provides the CLI client, HTTP relay, stdio MCP server, local server management, setup commands, and Claude Channel implementation. Harness-specific text assets and the Amp plugin are embedded into the binary for installation.
 
-The server also embeds `website/index.html`. It serves the marketing page at `/` and non-destructive join instructions at `GET /join/{token}`. Opening an invite in a browser never claims it; only the authenticated CLI/API claim request consumes the token.
+The server also embeds `web/index.html`. It serves the marketing page at `/` and non-destructive join instructions at `GET /join/{token}`. Opening an invite in a browser never claims it; only the authenticated CLI/API claim request consumes the token.
 
 ## Primary user flow
 
@@ -197,7 +197,7 @@ agentline/
 |-- internal/               relay, client, store, MCP, setup
 |-- integrations/           embedded skills and harness adapters
 |-- docs/                   design and reference documentation
-|-- website/index.html      one-page agentline.dev site
+|-- web/index.html          one-page agentline.dev site
 |-- README.md
 |-- LICENSE                 MIT
 `-- go.mod

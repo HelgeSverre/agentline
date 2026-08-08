@@ -17,11 +17,20 @@ POST /v1/rooms/{id}/done
 GET  /healthz
 GET  /
 GET  /join/{token}
+GET  /inspect/{token}
+GET  /inspect/{token}/events
 ```
 
 Participant endpoints use a bearer credential issued by room creation or invite claim. Invite claim uses its one-use token instead.
 
 `GET /` serves the embedded one-page website. `GET /join/{token}` shows the command needed to join but does not claim the invite. Only `POST /v1/invites/{token}/claim` consumes it.
+
+`GET /inspect/{token}` is a read-only, server-rendered transcript for humans.
+Room creation returns its separate `inspect_url`; it is a shareable capability,
+not a participant or invite credential. The page connects to
+`GET /inspect/{token}/events`, a Datastar SSE stream that first replaces the
+transcript with an authoritative database snapshot and then patches live room
+changes. Completed room history remains inspectable until expiry.
 
 ## Message envelope
 
@@ -133,6 +142,9 @@ participants
 invites
   id, room_id, token_hash, claimed_at, claimed_by
 
+inspectors
+  room_id, token_hash
+
 messages
   id, room_id, sequence, sender_id, kind, body,
   reply_to, created_at
@@ -143,8 +155,10 @@ Required uniqueness includes participant token hashes, invite token hashes, mess
 ## Security boundary
 
 - Remote deployments require HTTPS at the proxy or server boundary.
-- Raw participant and invite tokens are never stored by the relay.
+- Raw participant, invite, and inspection tokens are never stored by the relay.
 - Authorization checks room membership for every read and write.
+- An inspection capability permits transcript reads only; it cannot claim an
+  invite, authenticate as a participant, write, or discover another room.
 - Invite claim is atomic and succeeds once.
 - Peer messages remain untrusted model input.
 - The hosted relay can read message bodies in the MVP.

@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS invites (
  id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
  token_hash BLOB NOT NULL UNIQUE, claimed_at INTEGER, claimed_by TEXT REFERENCES participants(id)
 );
+CREATE TABLE IF NOT EXISTS inspectors (
+ room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
+ token_hash BLOB NOT NULL UNIQUE
+);
 CREATE TABLE IF NOT EXISTS messages (
  id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
  sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, kind TEXT NOT NULL,
@@ -92,6 +96,10 @@ func (s *sqliteStore) CreateRoom(ctx context.Context, p CreateRoomParams) (Creat
 	if err != nil {
 		return CreatedRoom{}, err
 	}
+	inspectToken, err := securetoken.New(32)
+	if err != nil {
+		return CreatedRoom{}, err
+	}
 	now := s.now().UTC()
 	room := model.Room{ID: roomID, Name: p.Name, Status: "waiting_for_peer", MaxParticipants: p.MaxParticipants, CreatedAt: now, ExpiresAt: now.Add(p.TTL)}
 	creator := model.Participant{ID: participantID, RoomID: roomID, Name: p.CreatorName, JoinedAt: now}
@@ -111,10 +119,14 @@ func (s *sqliteStore) CreateRoom(ctx context.Context, p CreateRoomParams) (Creat
 	if _, err = tx.ExecContext(ctx, `INSERT INTO invites(id,room_id,token_hash) VALUES(?,?,?)`, inviteID, room.ID, inviteHash[:]); err != nil {
 		return CreatedRoom{}, fmt.Errorf("insert invite: %w", err)
 	}
+	inspectHash := securetoken.Hash(inspectToken)
+	if _, err = tx.ExecContext(ctx, `INSERT INTO inspectors(room_id,token_hash) VALUES(?,?)`, room.ID, inspectHash[:]); err != nil {
+		return CreatedRoom{}, fmt.Errorf("insert inspector: %w", err)
+	}
 	if err = tx.Commit(); err != nil {
 		return CreatedRoom{}, fmt.Errorf("commit room: %w", err)
 	}
-	return CreatedRoom{Room: room, Creator: creator, CreatorToken: creatorToken, InviteToken: inviteToken}, nil
+	return CreatedRoom{Room: room, Creator: creator, CreatorToken: creatorToken, InviteToken: inviteToken, InspectToken: inspectToken}, nil
 }
 
 func (s *sqliteStore) ClaimInvite(ctx context.Context, rawToken, name string) (ClaimResult, error) {
@@ -202,6 +214,25 @@ func (s *sqliteStore) Authenticate(ctx context.Context, roomID, rawToken string)
 	}
 	p.JoinedAt = fromNanos(joined)
 	return p, nil
+}
+
+func (s *sqliteStore) Inspect(ctx context.Context, rawToken string) (model.Room, []model.Message, error) {
+	hash := securetoken.Hash(rawToken)
+	var roomID string
+	if err := s.db.QueryRowContext(ctx, `SELECT room_id FROM inspectors WHERE token_hash=?`, hash[:]).Scan(&roomID); errors.Is(err, sql.ErrNoRows) {
+		return model.Room{}, nil, ErrInspectInvalid
+	} else if err != nil {
+		return model.Room{}, nil, err
+	}
+	room, err := s.GetRoom(ctx, roomID)
+	if err != nil {
+		return model.Room{}, nil, err
+	}
+	messages, err := s.MessagesAfter(ctx, room.ID, 0, maxEvents)
+	if err != nil {
+		return model.Room{}, nil, err
+	}
+	return room, messages, nil
 }
 
 func (s *sqliteStore) GetRoom(ctx context.Context, roomID string) (model.Room, error) {

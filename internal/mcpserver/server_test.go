@@ -48,6 +48,9 @@ func TestToolsAndConversationLifecycle(t *testing.T) {
 	created := call(t, alice, "create_room", map[string]any{"server": relayServer.URL, "room_name": "team", "participant_name": "alice", "ttl_seconds": 3600})
 	assertNoToken(t, created, aliceStore)
 	invite := created["invite_url"].(string)
+	if created["inspect_url"] == "" {
+		t.Fatalf("create output omitted inspection URL: %#v", created)
+	}
 	joined := call(t, bob, "join_room", map[string]any{"invite_url": invite, "participant_name": "bob"})
 	assertNoToken(t, joined, bobStore)
 

@@ -22,6 +22,7 @@
     body { min-block-size: 100dvh; }
 
     :root {
+      color-scheme: dark;
       --bg: #0a0a0a;
       --bg-raised: #141414;
       --bg-card: #111;
@@ -41,6 +42,7 @@
     }
 
     [data-theme="light"] {
+      color-scheme: light;
       --bg: #fafafa;
       --bg-raised: #f5f5f5;
       --bg-card: #fff;
@@ -81,6 +83,13 @@
 
     .wrap { inline-size: min(calc(100% - 2.5rem), 64rem); margin-inline: auto; }
 
+    .skip-link {
+      position: fixed; z-index: 20; inset-block-start: .75rem; inset-inline-start: .75rem;
+      translate: 0 -200%; padding: .55rem .8rem;
+      background: var(--text); color: var(--bg); border-radius: 4px;
+    }
+    .skip-link:focus { translate: 0; }
+
     /* ── nav ── */
     nav {
       position: sticky; top: 0; z-index: 10;
@@ -117,6 +126,8 @@
     .hero .desc { margin-block-start: .75rem; font-size: 1rem; color: var(--text-dim); max-inline-size: 52ch; margin-inline: auto; }
     .hero .meta { margin-block-start: 1.5rem; font-family: var(--mono); font-size: .78rem; color: var(--text-dim); letter-spacing: .04em; }
     .hero-actions { display: flex; justify-content: center; gap: .75rem; margin-block-start: 2rem; }
+    .hero-install { max-inline-size: 44rem; margin: 2.5rem auto 0; text-align: start; }
+    .hero-install-label { margin-block-end: .5rem; font-family: var(--mono); font-size: .75rem; color: var(--text-dim); text-align: center; }
 
     .btn {
       display: inline-flex; align-items: center; gap: .4rem;
@@ -143,10 +154,12 @@
     .benefit p { font-size: .9rem; margin-block-start: .35rem; }
 
     /* ── steps grid ── */
-    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; }
-    .step { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.75rem; position: relative; }
+    .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; padding: 0; list-style: none; }
+    .step { min-inline-size: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.75rem; position: relative; }
     .step-num { position: absolute; top: 1rem; right: 1rem; font-family: var(--mono); font-size: .7rem; font-weight: 700; color: var(--text-dim); }
     .step h3 { margin-block-end: .85rem; }
+    .step > p { margin-block-start: .75rem; }
+    .code-block-static pre { padding-inline-end: 1rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 
     /* ── code blocks ── */
     .code-block { position: relative; margin-block-start: .75rem; }
@@ -180,7 +193,7 @@
     .harness-table tbody tr { border-top: 1px solid var(--border); background: var(--bg-card); }
     .harness-table tbody tr:first-child { border-top: none; }
     .harness-table td:first-child { font-weight: 600; color: var(--text); }
-    .harness-badge { display: inline-block; margin-block-start: .2rem; font-family: var(--mono); font-size: .68rem; font-weight: 600; color: var(--accent); text-transform: uppercase; }
+    .harness-badge { display: block; margin-block-start: .35rem; font-family: var(--mono); font-size: .68rem; font-weight: 600; line-height: 1.35; color: var(--accent); text-transform: uppercase; }
 
     /* ── warn card ── */
     .warn { display: grid; grid-template-columns: auto 1fr; gap: 1.25rem; padding: 1.5rem; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 8px; }
@@ -205,7 +218,9 @@
       .hero h1 { max-inline-size: 100%; }
     }
     @media (max-width: 36rem) {
-      .nav-links a:first-child { display: none; }
+      .nav-links a:not(:last-of-type) { display: none; }
+      .hero-actions { flex-direction: column; align-items: stretch; }
+      .hero-actions .btn { justify-content: center; }
       .harness-table { display: block; overflow-x: auto; }
       footer .wrap { flex-direction: column; gap: .5rem; text-align: center; }
     }
@@ -217,13 +232,16 @@
 </head>
 <body>
 
+<a class="skip-link" href="#content">Skip to content</a>
+
 <nav>
   <div class="wrap">
     <a href="#" class="logo">agentline</a>
     <div class="nav-links">
+      <a href="#install">Install</a>
       <a href="#harnesses">Harnesses</a>
       <a href="https://github.com/HelgeSverre/agentline">GitHub</a>
-      <button class="theme-btn" onclick="toggleTheme()" aria-label="Toggle theme">
+      <button class="theme-btn" type="button" onclick="toggleTheme()" aria-label="Toggle theme">
         <span class="icon-light">&#9788;</span>
         <span class="icon-dark">&#9790;</span>
       </button>
@@ -231,17 +249,24 @@
   </div>
 </nav>
 
-<main>
+<main id="content" tabindex="-1">
 
   <section class="hero">
     <div class="wrap">
       <h1>Let two coding agents <span>talk.</span></h1>
       <p class="subtitle">A temporary relay. Two agents. One line.</p>
-      <p class="desc">Give two agent sessions a temporary room to exchange messages through a hosted, local, or self-hosted relay&mdash;without Agentline taking over either session.</p>
+      <p class="desc">Create a room, share one invite URL, and paste it into the other coding agent. The invite tells that agent how to install, join, and start listening.</p>
       <p class="meta">2 participants &middot; one-use invite &middot; 24-hour default expiry</p>
       <div class="hero-actions">
-        <a href="#flow" class="btn btn-primary">How it works</a>
+        <a href="#install" class="btn btn-primary">Install Agentline</a>
         <a href="https://github.com/HelgeSverre/agentline" class="btn btn-secondary">View on GitHub</a>
+      </div>
+      <div class="hero-install" id="install">
+        <p class="hero-install-label">Install once. Then open a line.</p>
+        <div class="code-block">
+          <pre tabindex="0"><code><span class="prompt">$</span> curl -fsSL https://agentline.dev/install.sh | sh</code></pre>
+          <button class="copy-btn" type="button" data-copy data-command="curl -fsSL https://agentline.dev/install.sh | sh" aria-label="Copy install command">Copy</button>
+        </div>
       </div>
     </div>
   </section>
@@ -250,40 +275,38 @@
   <section id="flow">
     <div class="wrap">
       <div class="section-header">
-        <p class="eyebrow">The whole flow</p>
-        <h2>Create. Join. Exchange.</h2>
-        <p class="section-lead">Both agents need outbound HTTP. Neither needs an account, dashboard, reverse tunnel, or shared credential.</p>
+        <p class="eyebrow">The actual handoff</p>
+        <h2>Create. Share. Paste.</h2>
+        <p class="section-lead">Only one person creates the room. The other pastes its one-use URL into their agent&mdash;no account, dashboard, or manual credential exchange.</p>
       </div>
-      <div class="steps">
-        <div class="step">
+      <ol class="steps">
+        <li class="step">
           <span class="step-num">01</span>
           <h3>Create a room</h3>
           <div class="code-block">
-            <pre><code><span class="prompt">$</span> agentline create --name claude</code></pre>
-            <button class="copy-btn" data-copy>Copy</button>
+            <pre tabindex="0"><code><span class="prompt">$</span> agentline create --name claude</code></pre>
+            <button class="copy-btn" type="button" data-copy data-command="agentline create --name claude" aria-label="Copy create room command">Copy</button>
           </div>
-          <p style="margin-top: .75rem">The creator gets a room handle and a one-use invite.</p>
-        </div>
-        <div class="step">
+          <p>The CLI stores the creator credential locally and prints a one-use HTTPS invite.</p>
+        </li>
+        <li class="step">
           <span class="step-num">02</span>
-          <h3>Join from agent two</h3>
-          <div class="code-block">
-            <pre><code><span class="prompt">$</span> agentline join INVITE --name codex</code></pre>
-            <button class="copy-btn" data-copy>Copy</button>
+          <h3>Share the invite</h3>
+          <div class="code-block code-block-static">
+            <pre tabindex="0"><code id="join-command">https://agentline.dev/join/eyJ...</code></pre>
           </div>
-          <p style="margin-top: .75rem">Claiming issues a separate participant credential.</p>
-        </div>
-        <div class="step">
+          <p>Send only this URL to the other person. Opening it does not consume the invite; joining does.</p>
+        </li>
+        <li class="step">
           <span class="step-num">03</span>
-          <h3>Send and wait</h3>
-          <div class="code-block">
-            <pre><code><span class="prompt">$</span> agentline send ROOM "Your turn"
-<span class="prompt">$</span> agentline wait ROOM</code></pre>
-            <button class="copy-btn" data-copy>Copy</button>
+          <h3>Paste it into agent two</h3>
+          <div class="code-block code-block-static">
+            <pre tabindex="0"><code><span class="comment">You:</span> Join this Agentline room:
+https://agentline.dev/join/eyJ...</code></pre>
           </div>
-          <p style="margin-top: .75rem">Ordered messages continue until either agent sends <code>done</code>.</p>
-        </div>
-      </div>
+          <p>The link serves agent-readable instructions to install if needed, run <code>agentline join</code>, and begin bounded <code>wait</code> calls.</p>
+        </li>
+      </ol>
     </div>
   </section>
 
@@ -341,15 +364,13 @@
     </div>
   </section>
 
-
-<!-- todo: make stronger CTA here with command listings etc  -->
   <section class="closing">
     <div class="wrap">
       <p class="eyebrow">Get started</p>
       <h2>Open a line between your agents.</h2>
       <div class="code-block">
-        <pre><code><span class="prompt">$</span> agentline create</code></pre>
-        <button class="copy-btn" data-copy>Copy</button>
+        <pre><code><span class="prompt">$</span> agentline create --name claude</code></pre>
+        <button class="copy-btn" type="button" data-copy data-command="agentline create --name claude" aria-label="Copy create room command">Copy</button>
       </div>
     </div>
   </section>
@@ -378,13 +399,19 @@
 
   document.querySelectorAll('[data-copy]').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const code = btn.previousElementSibling.textContent.trim();
+      const command = btn.dataset.command;
       try {
-        await navigator.clipboard.writeText(code);
+        await navigator.clipboard.writeText(command);
         btn.textContent = 'Copied';
         setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
       } catch {
-        btn.textContent = 'Select';
+        const fallback = document.createElement('textarea');
+        fallback.value = command;
+        fallback.setAttribute('aria-label', 'Selected command text');
+        fallback.style.cssText = 'position:fixed;inset:auto auto 0 0;inline-size:1px;block-size:1px;opacity:0';
+        document.body.append(fallback);
+        fallback.select();
+        btn.textContent = 'Selected — press Ctrl/Cmd+C';
       }
     });
   });

@@ -9,16 +9,17 @@ import (
 )
 
 var (
-	ErrRoomNotFound  = errors.New("room not found")
-	ErrRoomExpired   = errors.New("room expired")
-	ErrRoomClosed    = errors.New("room closed")
-	ErrInviteInvalid = errors.New("invite invalid")
-	ErrInviteClaimed = errors.New("invite already claimed")
-	ErrRoomFull      = errors.New("room full")
-	ErrUnauthorized  = errors.New("unauthorized")
-	ErrEventLimit    = errors.New("room event limit reached")
-	ErrConflict      = errors.New("conflict")
-	ErrInvalid       = errors.New("invalid")
+	ErrRoomNotFound   = errors.New("room not found")
+	ErrRoomExpired    = errors.New("room expired")
+	ErrRoomClosed     = errors.New("room closed")
+	ErrInviteInvalid  = errors.New("invite invalid")
+	ErrInviteClaimed  = errors.New("invite already claimed")
+	ErrRoomFull       = errors.New("room full")
+	ErrUnauthorized   = errors.New("unauthorized")
+	ErrInspectInvalid = errors.New("inspect capability invalid")
+	ErrEventLimit     = errors.New("room event limit reached")
+	ErrConflict       = errors.New("conflict")
+	ErrInvalid        = errors.New("invalid")
 )
 
 type CreateRoomParams struct {
@@ -31,6 +32,7 @@ type CreatedRoom struct {
 	Room                      model.Room
 	Creator                   model.Participant
 	CreatorToken, InviteToken string
+	InspectToken              string
 }
 
 type ClaimResult struct {
@@ -48,6 +50,7 @@ type Store interface {
 	CreateRoom(context.Context, CreateRoomParams) (CreatedRoom, error)
 	ClaimInvite(context.Context, string, string) (ClaimResult, error)
 	Authenticate(context.Context, string, string) (model.Participant, error)
+	Inspect(context.Context, string) (model.Room, []model.Message, error)
 	GetRoom(context.Context, string) (model.Room, error)
 	Append(context.Context, AppendParams) (model.Message, error)
 	MessagesAfter(context.Context, string, int64, int) ([]model.Message, error)
