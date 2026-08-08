@@ -40,9 +40,11 @@ func OpenSQLite(path string, now func() time.Time) (Store, error) {
 func (s *sqliteStore) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS rooms (
- id TEXT PRIMARY KEY, public_name TEXT NOT NULL, max_participants INTEGER NOT NULL CHECK(max_participants BETWEEN 1 AND 2),
+ id TEXT PRIMARY KEY, public_name TEXT NOT NULL,
+ max_participants INTEGER CHECK(max_participants > 0),
  status TEXT NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 1,
- created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, ended_at INTEGER, ended_by TEXT
+ created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+ ended_at INTEGER, ended_by TEXT
 );
 CREATE TABLE IF NOT EXISTS participants (
  id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -51,16 +53,19 @@ CREATE TABLE IF NOT EXISTS participants (
 );
 CREATE TABLE IF NOT EXISTS invites (
  id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
- token_hash BLOB NOT NULL UNIQUE, claimed_at INTEGER, claimed_by TEXT REFERENCES participants(id)
+ token_hash BLOB NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS messages (
  id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
- sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, kind TEXT NOT NULL,
- body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
- UNIQUE(room_id, sequence),
- FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id)
+ sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, recipient_id TEXT,
+ kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '',
+ created_at INTEGER NOT NULL, UNIQUE(room_id, sequence),
+ FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id),
+ FOREIGN KEY(room_id, recipient_id) REFERENCES participants(room_id, id)
 );
 CREATE INDEX IF NOT EXISTS messages_after ON messages(room_id, sequence);
+CREATE INDEX IF NOT EXISTS messages_recipient_after ON messages(room_id, recipient_id, sequence);
+CREATE INDEX IF NOT EXISTS participants_room ON participants(room_id, joined_at, id);
 CREATE INDEX IF NOT EXISTS rooms_expiry ON rooms(expires_at);`)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
@@ -69,7 +74,7 @@ CREATE INDEX IF NOT EXISTS rooms_expiry ON rooms(expires_at);`)
 }
 
 func (s *sqliteStore) CreateRoom(ctx context.Context, p CreateRoomParams) (CreatedRoom, error) {
-	if p.TTL <= 0 || p.MaxParticipants < 1 || p.MaxParticipants > 2 {
+	if p.TTL <= 0 || p.MaxParticipants != nil && *p.MaxParticipants <= 0 {
 		return CreatedRoom{}, ErrInvalid
 	}
 	roomID, err := securetoken.New(16)
@@ -125,17 +130,13 @@ func (s *sqliteStore) ClaimInvite(ctx context.Context, rawToken, name string) (C
 		return ClaimResult{}, err
 	}
 	defer tx.Rollback()
-	var inviteID, roomID string
-	var claimedAt sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT id,room_id,claimed_at FROM invites WHERE token_hash=?`, hash[:]).Scan(&inviteID, &roomID, &claimedAt)
+	var roomID string
+	err = tx.QueryRowContext(ctx, `SELECT room_id FROM invites WHERE token_hash=?`, hash[:]).Scan(&roomID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ClaimResult{}, ErrInviteInvalid
 	}
 	if err != nil {
 		return ClaimResult{}, err
-	}
-	if claimedAt.Valid {
-		return ClaimResult{}, ErrInviteClaimed
 	}
 	room, err := getRoom(ctx, tx, roomID)
 	if err != nil {
@@ -148,7 +149,7 @@ func (s *sqliteStore) ClaimInvite(ctx context.Context, rawToken, name string) (C
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM participants WHERE room_id=?`, roomID).Scan(&count); err != nil {
 		return ClaimResult{}, err
 	}
-	if count >= room.MaxParticipants {
+	if room.MaxParticipants != nil && count >= *room.MaxParticipants {
 		return ClaimResult{}, ErrRoomFull
 	}
 	participantToken, err := securetoken.New(32)
@@ -163,17 +164,6 @@ func (s *sqliteStore) ClaimInvite(ctx context.Context, rawToken, name string) (C
 	tokenHash := securetoken.Hash(participantToken)
 	if _, err = tx.ExecContext(ctx, `INSERT INTO participants(id,room_id,name,token_hash,joined_at) VALUES(?,?,?,?,?)`, participant.ID, roomID, name, tokenHash[:], nanos(now)); err != nil {
 		return ClaimResult{}, err
-	}
-	result, err := tx.ExecContext(ctx, `UPDATE invites SET claimed_at=?,claimed_by=? WHERE id=? AND claimed_at IS NULL`, nanos(now), participant.ID, inviteID)
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return ClaimResult{}, err
-	}
-	if changed != 1 {
-		return ClaimResult{}, ErrInviteClaimed
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE rooms SET status='active' WHERE id=?`, roomID); err != nil {
 		return ClaimResult{}, err
@@ -222,12 +212,17 @@ type queryer interface {
 func getRoom(ctx context.Context, q queryer, roomID string) (model.Room, error) {
 	var room model.Room
 	var created, expires int64
-	err := q.QueryRowContext(ctx, `SELECT id,public_name,status,max_participants,created_at,expires_at FROM rooms WHERE id=?`, roomID).Scan(&room.ID, &room.Name, &room.Status, &room.MaxParticipants, &created, &expires)
+	var maxParticipants sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT id,public_name,status,max_participants,created_at,expires_at FROM rooms WHERE id=?`, roomID).Scan(&room.ID, &room.Name, &room.Status, &maxParticipants, &created, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Room{}, ErrRoomNotFound
 	}
 	if err != nil {
 		return model.Room{}, err
+	}
+	if maxParticipants.Valid {
+		max := int(maxParticipants.Int64)
+		room.MaxParticipants = &max
 	}
 	room.CreatedAt, room.ExpiresAt = fromNanos(created), fromNanos(expires)
 	return room, nil

@@ -24,7 +24,7 @@ var (
 type CreateRoomParams struct {
 	Name, CreatorName string
 	TTL               time.Duration
-	MaxParticipants   int
+	MaxParticipants   *int
 }
 
 type CreatedRoom struct {

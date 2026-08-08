@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,9 +35,11 @@ func openTestStore(t *testing.T) (Store, *testClock, string) {
 	return s, clock, path
 }
 
+func intPtr(n int) *int { return &n }
+
 func createAndClaim(t *testing.T, s Store) (CreatedRoom, ClaimResult) {
 	t.Helper()
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour, MaxParticipants: 2})
+	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +52,7 @@ func createAndClaim(t *testing.T, s Store) (CreatedRoom, ClaimResult) {
 
 func TestCreateRoomUsesFixedExpiryAndStoresOnlyHashes(t *testing.T) {
 	s, clock, path := openTestStore(t)
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "alpha", CreatorName: "alice", TTL: 2 * time.Hour, MaxParticipants: 2})
+	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "alpha", CreatorName: "alice", TTL: 2 * time.Hour, MaxParticipants: intPtr(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,10 +83,38 @@ func TestCreateRoomUsesFixedExpiryAndStoresOnlyHashes(t *testing.T) {
 	}
 }
 
-func TestCreateRoomRejectsMoreThanTwoParticipantsInGoAndSchema(t *testing.T) {
+func TestCreateRoomSupportsUnlimitedAndPositiveCapacity(t *testing.T) {
 	s, _, path := openTestStore(t)
-	if _, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "crowd", CreatorName: "alice", TTL: time.Hour, MaxParticipants: 3}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("create room with 3 participants: %v", err)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		max  *int
+		want any
+		err  error
+	}{
+		{name: "unlimited", want: nil},
+		{name: "capped", max: intPtr(3), want: int64(3)},
+		{name: "zero", max: intPtr(0), err: ErrInvalid},
+		{name: "negative", max: intPtr(-1), err: ErrInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			created, err := s.CreateRoom(ctx, CreateRoomParams{Name: tc.name, CreatorName: "alice", TTL: time.Hour, MaxParticipants: tc.max})
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("CreateRoom() error = %v, want %v", err, tc.err)
+			}
+			if tc.err != nil {
+				return
+			}
+			if created.Room.MaxParticipants == nil != (tc.want == nil) {
+				t.Fatalf("room capacity = %v, want %v", created.Room.MaxParticipants, tc.want)
+			}
+			if tc.want == nil {
+				encoded, err := json.Marshal(created.Room)
+				if err != nil || !strings.Contains(string(encoded), `"max_participants":null`) {
+					t.Fatalf("room JSON = %s, err = %v", encoded, err)
+				}
+			}
+		})
 	}
 
 	db, err := sql.Open("sqlite", path)
@@ -90,15 +122,69 @@ func TestCreateRoomRejectsMoreThanTwoParticipantsInGoAndSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(`INSERT INTO rooms(id,public_name,max_participants,status,created_at,expires_at) VALUES('invalid','crowd',3,'waiting_for_peer',0,1)`)
-	if err == nil {
-		t.Fatal("schema accepted max_participants=3")
+	var unlimited sql.NullInt64
+	if err := db.QueryRow(`SELECT max_participants FROM rooms WHERE public_name='unlimited'`).Scan(&unlimited); err != nil || unlimited.Valid {
+		t.Fatalf("unlimited capacity = %v, err = %v", unlimited, err)
+	}
+	var capped int
+	if err := db.QueryRow(`SELECT max_participants FROM rooms WHERE public_name='capped'`).Scan(&capped); err != nil || capped != 3 {
+		t.Fatalf("capped capacity = %d, err = %v", capped, err)
+	}
+	if _, err := db.Exec(`INSERT INTO rooms(id,public_name,max_participants,status,created_at,expires_at) VALUES('large','crowd',1000000,'waiting_for_peer',0,1)`); err != nil {
+		t.Fatalf("schema rejected large positive capacity: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO rooms(id,public_name,max_participants,status,created_at,expires_at) VALUES('zero','crowd',0,'waiting_for_peer',0,1)`); err == nil {
+		t.Fatal("schema accepted zero capacity")
+	}
+}
+
+func TestSchemaIsCleanMultiParticipantCutoff(t *testing.T) {
+	_, _, path := openTestStore(t)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	columns := func(table string) map[string]bool {
+		rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		got := map[string]bool{}
+		for rows.Next() {
+			var cid, notNull, primaryKey int
+			var name, dataType string
+			var defaultValue any
+			if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+				t.Fatal(err)
+			}
+			got[name] = notNull != 0
+		}
+		return got
+	}
+
+	invites := columns("invites")
+	if _, ok := invites["claimed_at"]; ok {
+		t.Fatal("invites retains claimed_at")
+	}
+	if _, ok := invites["claimed_by"]; ok {
+		t.Fatal("invites retains claimed_by")
+	}
+	messages := columns("messages")
+	if notNull, ok := messages["recipient_id"]; !ok || notNull {
+		t.Fatalf("messages.recipient_id exists=%v not_null=%v", ok, notNull)
+	}
+	rooms := columns("rooms")
+	if rooms["max_participants"] {
+		t.Fatal("rooms.max_participants is not nullable")
 	}
 }
 
 func TestInviteClaimIsAtomicOneUseAndCredentialsAuthenticate(t *testing.T) {
 	s, _, _ := openTestStore(t)
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "alpha", CreatorName: "alice", TTL: time.Hour, MaxParticipants: 2})
+	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "alpha", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,20 +203,20 @@ func TestInviteClaimIsAtomicOneUseAndCredentialsAuthenticate(t *testing.T) {
 	}
 	close(start)
 	var winner ClaimResult
-	success, consumed := 0, 0
+	success, full := 0, 0
 	for range 2 {
 		result := <-results
 		if result.err == nil {
 			success++
 			winner = result.claim
-		} else if errors.Is(result.err, ErrInviteClaimed) {
-			consumed++
+		} else if errors.Is(result.err, ErrRoomFull) {
+			full++
 		} else {
 			t.Fatalf("claim error: %v", result.err)
 		}
 	}
-	if success != 1 || consumed != 1 {
-		t.Fatalf("success=%d consumed=%d", success, consumed)
+	if success != 1 || full != 1 {
+		t.Fatalf("success=%d full=%d", success, full)
 	}
 	if winner.ParticipantToken == created.CreatorToken {
 		t.Fatal("participants share credential")
@@ -153,7 +239,7 @@ func TestInviteClaimIsAtomicOneUseAndCredentialsAuthenticate(t *testing.T) {
 func TestCapacityAndFixedExpiry(t *testing.T) {
 	s, clock, _ := openTestStore(t)
 	created, claimed := createAndClaim(t, s)
-	if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "third"); !errors.Is(err, ErrInviteClaimed) {
+	if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "third"); !errors.Is(err, ErrRoomFull) {
 		t.Fatalf("second claim: %v", err)
 	}
 	clock.add(30 * time.Minute)
@@ -161,14 +247,14 @@ func TestCapacityAndFixedExpiry(t *testing.T) {
 	if err != nil || !room.ExpiresAt.Equal(created.Room.ExpiresAt) {
 		t.Fatalf("expiry changed: %+v %v", room, err)
 	}
-	if claimed.Room.MaxParticipants != 2 {
+	if claimed.Room.MaxParticipants == nil || *claimed.Room.MaxParticipants != 2 {
 		t.Fatal("capacity changed")
 	}
 }
 
 func TestInviteClaimRejectsRoomAtCapacity(t *testing.T) {
 	s, _, _ := openTestStore(t)
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "solo", CreatorName: "alice", TTL: time.Hour, MaxParticipants: 1})
+	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "solo", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(1)})
 	if err != nil {
 		t.Fatal(err)
 	}
