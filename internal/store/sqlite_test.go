@@ -263,6 +263,119 @@ func TestInviteClaimRejectsRoomAtCapacity(t *testing.T) {
 	}
 }
 
+func TestReusableInviteCreatesDistinctParticipants(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.ClaimInvite(ctx, created.InviteToken, "guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.ClaimInvite(ctx, created.InviteToken, "guest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Participant.ID == second.Participant.ID || first.ParticipantToken == second.ParticipantToken {
+		t.Fatalf("reused identity or token: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestUnlimitedRoomAcceptsSeveralParticipants(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if _, err := s.ClaimInvite(ctx, created.InviteToken, "guest"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	participants, err := s.Participants(ctx, created.Room.ID)
+	if err != nil || len(participants) != 6 {
+		t.Fatalf("participants=%+v err=%v", participants, err)
+	}
+}
+
+func TestConcurrentClaimsStopExactlyAtCapacity(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(3)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 8)
+	for range 8 {
+		go func() {
+			<-start
+			_, err := s.ClaimInvite(ctx, created.InviteToken, "guest")
+			results <- err
+		}()
+	}
+	close(start)
+	successes, full := 0, 0
+	for range 8 {
+		switch err := <-results; {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrRoomFull):
+			full++
+		default:
+			t.Fatalf("claim error: %v", err)
+		}
+	}
+	if successes != 2 || full != 6 {
+		t.Fatalf("successes=%d full=%d", successes, full)
+	}
+	participants, err := s.Participants(ctx, created.Room.ID)
+	if err != nil || len(participants) != 3 {
+		t.Fatalf("participants=%+v err=%v", participants, err)
+	}
+}
+
+func TestReusableInviteRejectsFullExpiredAndCompletedRooms(t *testing.T) {
+	t.Run("full", func(t *testing.T) {
+		s, _, _ := openTestStore(t)
+		created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour, MaxParticipants: intPtr(1)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "guest"); !errors.Is(err, ErrRoomFull) {
+			t.Fatalf("claim error=%v", err)
+		}
+	})
+	t.Run("expired", func(t *testing.T) {
+		s, clock, _ := openTestStore(t)
+		created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock.add(time.Hour)
+		if _, err := s.ClaimInvite(context.Background(), created.InviteToken, "guest"); !errors.Is(err, ErrRoomExpired) {
+			t.Fatalf("claim error=%v", err)
+		}
+	})
+	t.Run("completed", func(t *testing.T) {
+		s, _, _ := openTestStore(t)
+		ctx := context.Background()
+		created, err := s.CreateRoom(ctx, CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.CloseRoom(ctx, created.Room.ID, created.Creator.ID, "done"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimInvite(ctx, created.InviteToken, "guest"); !errors.Is(err, ErrRoomClosed) {
+			t.Fatalf("claim error=%v", err)
+		}
+	})
+}
+
 func TestAppendOrderingIdempotencyLimitAndDoneHistory(t *testing.T) {
 	s, _, _ := openTestStore(t)
 	created, claimed := createAndClaim(t, s)

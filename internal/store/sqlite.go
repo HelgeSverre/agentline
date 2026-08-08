@@ -145,6 +145,9 @@ func (s *sqliteStore) ClaimInvite(ctx context.Context, rawToken, name string) (C
 	if err := activeAt(room, now); err != nil {
 		return ClaimResult{}, err
 	}
+	if room.Status == "done" {
+		return ClaimResult{}, ErrRoomClosed
+	}
 	var count int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*) FROM participants WHERE room_id=?`, roomID).Scan(&count); err != nil {
 		return ClaimResult{}, err
@@ -203,6 +206,28 @@ func (s *sqliteStore) GetRoom(ctx context.Context, roomID string) (model.Room, e
 		return model.Room{}, err
 	}
 	return room, nil
+}
+
+func (s *sqliteStore) Participants(ctx context.Context, roomID string) ([]model.Participant, error) {
+	if _, err := s.GetRoom(ctx, roomID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,room_id,name,joined_at FROM participants WHERE room_id=? ORDER BY joined_at,id`, roomID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	participants := []model.Participant{}
+	for rows.Next() {
+		var participant model.Participant
+		var joined int64
+		if err := rows.Scan(&participant.ID, &participant.RoomID, &participant.Name, &joined); err != nil {
+			return nil, err
+		}
+		participant.JoinedAt = fromNanos(joined)
+		participants = append(participants, participant)
+	}
+	return participants, rows.Err()
 }
 
 type queryer interface {

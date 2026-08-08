@@ -49,6 +49,7 @@ type Store interface {
 	ClaimInvite(context.Context, string, string) (ClaimResult, error)
 	Authenticate(context.Context, string, string) (model.Participant, error)
 	GetRoom(context.Context, string) (model.Room, error)
+	Participants(context.Context, string) ([]model.Participant, error)
 	Append(context.Context, AppendParams) (model.Message, error)
 	MessagesAfter(context.Context, string, int64, int) ([]model.Message, error)
 	CloseRoom(context.Context, string, string, string) (model.Message, error)
