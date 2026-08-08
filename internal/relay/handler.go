@@ -80,23 +80,18 @@ func NewHandler(data store.Store, config Config, now func() time.Time) http.Hand
 	mux.HandleFunc("GET /install.sh", h.install)
 	mux.HandleFunc("GET /join/{token}", h.join)
 	mux.HandleFunc("GET /healthz", h.health)
-	mux.HandleFunc("POST /v2/rooms", h.createRoom)
-	mux.HandleFunc("POST /v2/invites/{token}/claim", h.claimInvite)
-	mux.HandleFunc("GET /v2/rooms/{id}", h.getRoom)
-	mux.HandleFunc("POST /v2/rooms/{id}/messages", h.sendMessage)
-	mux.HandleFunc("GET /v2/rooms/{id}/messages", h.messages)
-	mux.HandleFunc("GET /v2/rooms/{id}/wait", h.wait)
-	mux.HandleFunc("POST /v2/rooms/{id}/done", h.done)
+	mux.HandleFunc("POST /api/rooms", h.createRoom)
+	mux.HandleFunc("POST /api/invites/{token}/claim", h.claimInvite)
+	mux.HandleFunc("GET /api/rooms/{id}", h.getRoom)
+	mux.HandleFunc("POST /api/rooms/{id}/messages", h.sendMessage)
+	mux.HandleFunc("GET /api/rooms/{id}/messages", h.messages)
+	mux.HandleFunc("GET /api/rooms/{id}/wait", h.wait)
+	mux.HandleFunc("POST /api/rooms/{id}/done", h.done)
 	return h.logRequests(mux)
 }
 
 func (h *handler) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v") && !strings.HasPrefix(r.URL.Path, "/v2/") {
-			writeError(w, http.StatusNotFound, "unsupported_api_version", "The API version is not supported.")
-			log.Printf("relay request method=%s route=%q", r.Method, "unsupported-version")
-			return
-		}
 		next.ServeHTTP(w, r)
 		pattern := r.Pattern
 		if pattern == "" {

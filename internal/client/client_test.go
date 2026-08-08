@@ -14,7 +14,7 @@ import (
 
 func TestCreateAndClaimUseRelayShapes(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/rooms", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/rooms", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
 		if body["name"] != "room" || body["creator_name"] != "alice" || body["ttl_seconds"] != float64(3600) {
@@ -23,13 +23,13 @@ func TestCreateAndClaimUseRelayShapes(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{"room":{"id":"r1","name":"room"},"participant":{"id":"p1"},"participant_token":"secret","invite_token":"invite","invite_url":"https://relay.test/join/invite"}`))
 	})
-	mux.HandleFunc("POST /v1/invites/invite/claim", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/invites/invite/claim", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"room":{"id":"r1","name":"room"},"participant":{"id":"p2"},"participant_token":"joined"}`))
 	})
 	s := httptest.NewServer(mux)
 	defer s.Close()
 	c := New(s.URL, "", s.Client())
-	created, err := c.CreateRoom(context.Background(), "room", "alice", time.Hour)
+	created, err := c.CreateRoom(context.Background(), "room", "alice", time.Hour, nil)
 	if err != nil || created.ParticipantToken != "secret" || created.InviteURL == "" {
 		t.Fatalf("created=%+v err=%v", created, err)
 	}
@@ -63,7 +63,7 @@ func TestSendGeneratesOneIDAndRetriesServerError(t *testing.T) {
 	defer s.Close()
 	c := New(s.URL, "token", s.Client())
 	c.Backoff = time.Millisecond
-	message, err := c.Send(context.Background(), "r1", "", "hello", "")
+	message, err := c.Send(context.Background(), "r1", "", "hello", "", "")
 	if err != nil || message.ID != firstID || attempts.Load() != 2 {
 		t.Fatalf("message=%+v attempts=%d err=%v", message, attempts.Load(), err)
 	}

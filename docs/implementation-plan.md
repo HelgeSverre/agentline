@@ -4,7 +4,7 @@
 
 **Goal:** Build and verify a single Go binary that hosts or connects to temporary two-agent rooms, exposes CLI and MCP interfaces, installs supported harness integrations, and is ready for deployment at `agentline.dev`.
 
-**Architecture:** The `agentline` binary owns a versioned HTTP relay, SQLite persistence, local credentials, CLI commands, and a stdio MCP server. Every harness uses the same relay and room semantics; native adapters are optional local delivery improvements. The server embeds the website and serves it beside `/v1` APIs.
+**Architecture:** The `agentline` binary owns a HTTP relay, SQLite persistence, local credentials, CLI commands, and a stdio MCP server. Every harness uses the same relay and room semantics; native adapters are optional local delivery improvements. The server embeds the website and serves it beside `/api` APIs.
 
 **Tech stack:** Go, `net/http`, `database/sql`, `modernc.org/sqlite`, `github.com/modelcontextprotocol/go-sdk/mcp`, embedded HTML/skill/plugin assets, and TypeScript only for harness adapters.
 

@@ -48,6 +48,14 @@ type WaitResult struct {
 	Sequence    int64          `json:"sequence,omitempty"`
 }
 
+// ReadResult contains the messages visible to the authenticated participant
+// and the highest sequence the relay examined. Cursor may advance across
+// messages that are not visible to that participant.
+type ReadResult struct {
+	Messages []model.Message `json:"messages"`
+	Cursor   int64           `json:"cursor"`
+}
+
 type Error struct {
 	Status        int
 	Code, Message string
@@ -76,9 +84,9 @@ func ValidateOrigin(origin string) error {
 	return nil
 }
 
-func (c Client) CreateRoom(ctx context.Context, name, creator string, ttl time.Duration) (CreateResult, error) {
+func (c Client) CreateRoom(ctx context.Context, name, creator string, ttl time.Duration, maxParticipants *int) (CreateResult, error) {
 	var out CreateResult
-	err := c.do(ctx, http.MethodPost, "/v1/rooms", map[string]any{"name": name, "creator_name": creator, "ttl_seconds": ttl.Seconds()}, &out, false)
+	err := c.do(ctx, http.MethodPost, "/api/rooms", map[string]any{"name": name, "creator_name": creator, "ttl_seconds": ttl.Seconds(), "max_participants": maxParticipants}, &out, false)
 	if err == nil && strings.HasPrefix(out.InviteURL, "/") {
 		out.InviteURL = c.BaseURL + out.InviteURL
 	}
@@ -108,17 +116,17 @@ func (c Client) ClaimInvite(ctx context.Context, invite, name string) (ClaimResu
 		base = u.Scheme + "://" + u.Host
 	}
 	var out ClaimResult
-	err = New(base, "", c.HTTP).do(ctx, http.MethodPost, "/v1/invites/"+url.PathEscape(token)+"/claim", map[string]string{"name": name}, &out, false)
+	err = New(base, "", c.HTTP).do(ctx, http.MethodPost, "/api/invites/"+url.PathEscape(token)+"/claim", map[string]string{"name": name}, &out, false)
 	return out, err
 }
 
 func (c Client) Room(ctx context.Context, room string) (model.Room, error) {
 	var out model.Room
-	err := c.do(ctx, http.MethodGet, "/v1/rooms/"+url.PathEscape(room), nil, &out, true)
+	err := c.do(ctx, http.MethodGet, "/api/rooms/"+url.PathEscape(room), nil, &out, true)
 	return out, err
 }
 
-func (c Client) Send(ctx context.Context, room, id, body, replyTo string) (model.Message, error) {
+func (c Client) Send(ctx context.Context, room, id, body, replyTo, to string) (model.Message, error) {
 	if id == "" {
 		var err error
 		id, err = securetoken.New(16)
@@ -127,21 +135,19 @@ func (c Client) Send(ctx context.Context, room, id, body, replyTo string) (model
 		}
 	}
 	var out model.Message
-	err := c.do(ctx, http.MethodPost, "/v1/rooms/"+url.PathEscape(room)+"/messages", map[string]string{"id": id, "body": body, "reply_to": replyTo}, &out, true)
+	err := c.do(ctx, http.MethodPost, "/api/rooms/"+url.PathEscape(room)+"/messages", map[string]string{"id": id, "body": body, "reply_to": replyTo, "to": to}, &out, true)
 	return out, err
 }
 
-func (c Client) Read(ctx context.Context, room string, after int64) ([]model.Message, error) {
-	var out struct {
-		Messages []model.Message `json:"messages"`
-	}
-	err := c.do(ctx, http.MethodGet, "/v1/rooms/"+url.PathEscape(room)+"/messages?after="+strconv.FormatInt(after, 10), nil, &out, true)
-	return out.Messages, err
+func (c Client) Read(ctx context.Context, room string, after int64) (ReadResult, error) {
+	var out ReadResult
+	err := c.do(ctx, http.MethodGet, "/api/rooms/"+url.PathEscape(room)+"/messages?after="+strconv.FormatInt(after, 10), nil, &out, true)
+	return out, err
 }
 
 func (c Client) Wait(ctx context.Context, room string, after int64, timeout time.Duration) (WaitResult, error) {
 	var out WaitResult
-	path := "/v1/rooms/" + url.PathEscape(room) + "/wait?after=" + strconv.FormatInt(after, 10) + "&timeout=" + strconv.FormatFloat(timeout.Seconds(), 'f', -1, 64)
+	path := "/api/rooms/" + url.PathEscape(room) + "/wait?after=" + strconv.FormatInt(after, 10) + "&timeout=" + strconv.FormatFloat(timeout.Seconds(), 'f', -1, 64)
 	err := c.do(ctx, http.MethodGet, path, nil, &out, false)
 	return out, err
 }
@@ -155,7 +161,7 @@ func (c Client) Done(ctx context.Context, room, id string) (model.Message, error
 		}
 	}
 	var out model.Message
-	err := c.do(ctx, http.MethodPost, "/v1/rooms/"+url.PathEscape(room)+"/done", map[string]string{"id": id}, &out, true)
+	err := c.do(ctx, http.MethodPost, "/api/rooms/"+url.PathEscape(room)+"/done", map[string]string{"id": id}, &out, true)
 	return out, err
 }
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/HelgeSverre/agentline/internal/localconfig"
+	"github.com/spf13/cobra"
 )
 
 type Dependencies struct {
@@ -28,40 +29,26 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	if len(args) > 0 && args[0] == "--json" {
 		r.json, args = true, args[1:]
 	}
-	if len(args) == 0 {
-		r.fail(fmt.Errorf("usage: agentline [--json] <create|join|send|read|wait|done|status|mcp|server|local|setup|doctor>"))
-		return 2
+	root := &cobra.Command{
+		Use:           "agentline",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		Args:          cobra.NoArgs,
 	}
-	var err error
-	switch args[0] {
-	case "create":
-		err = r.create(args[1:])
-	case "join":
-		err = r.join(args[1:])
-	case "send":
-		err = r.send(args[1:])
-	case "read":
-		err = r.read(args[1:])
-	case "wait":
-		err = r.wait(args[1:])
-	case "done":
-		err = r.done(args[1:])
-	case "status":
-		err = r.status(args[1:])
-	case "mcp":
-		err = r.mcp(args[1:])
-	case "server":
-		err = r.server(args[1:])
-	case "local":
-		err = r.local(args[1:])
-	case "setup":
-		err = r.setup(args[1:])
-	case "doctor":
-		err = r.doctor(args[1:])
-	default:
-		err = fmt.Errorf("unknown command %q", args[0])
+	root.SetArgs(args)
+	root.SetIn(in)
+	root.SetOut(out)
+	root.SetErr(stderr)
+	for name, run := range map[string]func([]string) error{
+		"create": r.create, "join": r.join, "send": r.send, "read": r.read,
+		"wait": r.wait, "done": r.done, "status": r.status, "mcp": r.mcp,
+		"server": r.server, "local": r.local, "setup": r.setup, "doctor": r.doctor,
+	} {
+		root.AddCommand(&cobra.Command{Use: name, Args: cobra.ArbitraryArgs, DisableFlagParsing: true, RunE: func(run func([]string) error) func(*cobra.Command, []string) error {
+			return func(_ *cobra.Command, commandArgs []string) error { return run(commandArgs) }
+		}(run)})
 	}
-	if err != nil {
+	if err := root.ExecuteContext(ctx); err != nil {
 		r.fail(err)
 		return 1
 	}
