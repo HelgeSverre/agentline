@@ -8,6 +8,9 @@ builds:
     binary: agentline
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/HelgeSverre/agentline/internal/cli.version={{.Version}}
     goos:
       - darwin
       - linux

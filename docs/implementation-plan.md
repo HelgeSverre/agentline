@@ -6,12 +6,12 @@
 
 **Architecture:** The `agentline` binary owns a versioned HTTP relay, SQLite persistence, local credentials, CLI commands, and a stdio MCP server. Every harness uses the same relay and room semantics; native adapters are optional local delivery improvements. The server embeds the website and serves it beside `/v1` APIs.
 
-**Tech stack:** Go, `net/http`, `database/sql`, `modernc.org/sqlite`, `github.com/modelcontextprotocol/go-sdk/mcp`, embedded HTML/skill/plugin assets, and TypeScript only for harness adapters.
+**Tech stack:** Go, `net/http`, `database/sql`, `modernc.org/sqlite`, `github.com/modelcontextprotocol/go-sdk/mcp`, `github.com/spf13/cobra` for the CLI, embedded HTML/skill/plugin assets, and TypeScript only for harness adapters.
 
 ## Global constraints
 
 - Module path: `github.com/HelgeSverre/agentline`.
-- Prefer the Go standard library; do not add a CLI framework, HTTP framework, ORM, or dependency-injection framework.
+- Prefer the Go standard library for server, storage, and client code; the CLI uses Cobra/pflag for command dispatch, help, and flag parsing. Do not add an HTTP framework, ORM, or dependency-injection framework.
 - Hosted server default: `https://agentline.dev`.
 - Room defaults: two participants, 24-hour TTL, seven-day maximum, and 1,000 events.
 - Message body maximum: 64 KiB.
@@ -38,7 +38,7 @@ internal/mcpserver/server.go        portable stdio MCP server
 internal/setup/                      setup planning and installation
 internal/channel/server.go          Claude Channel adapter
 integrations/                        skills and native adapters
-website/index.html                  embedded website
+web/index.html                      embedded website
 README.md, LICENSE                  public project entry points
 Dockerfile, fly.toml                deployment readiness
 ```
@@ -50,7 +50,7 @@ Dockerfile, fly.toml                deployment readiness
 **Parallel:** Run alongside Task 2. Do not edit Go files or `docs/`.
 
 **Files:**
-- Create: `website/index.html`
+- Create: `web/index.html`
 - Create: `README.md`
 - Create: `LICENSE`
 
@@ -70,8 +70,8 @@ Dockerfile, fly.toml                deployment readiness
 ```bash
 test -s README.md
 test -s LICENSE
-test -s website/index.html
-grep -q 'id="join-command"' website/index.html
+test -s web/index.html
+grep -q 'id="join-command"' web/index.html
 ```
 
 Expected: exit code 0.
@@ -166,7 +166,7 @@ func OpenSQLite(path string, now func() time.Time) (Store, error)
 - Create: `internal/relay/ratelimit.go`
 - Create: `internal/relay/ratelimit_test.go`
 - Create: `internal/relay/server.go`
-- Create: `website/assets.go`
+- Create: `web/assets.go`
 
 **Produces:**
 
@@ -184,7 +184,7 @@ func Serve(context.Context, net.Listener, http.Handler, store.Store) error
 - [ ] Use `httptest.Server` to test every endpoint in `docs/protocol.md`, bearer auth, one-use claim, body and rate limits, stable errors, cursors, idempotency, `/healthz`, `/`, and non-destructive `GET /join/{token}`.
 - [ ] Test wait wake-up, timeout, cancellation, and graceful server shutdown.
 - [ ] Run `go test -race ./internal/relay`; expect failure.
-- [ ] Implement with `http.ServeMux`, `http.MaxBytesReader`, strict JSON, route-pattern logging, and a small in-memory fixed-window limiter. Embed `website/index.html` from `website/assets.go`. Never log raw invite paths, authorization headers, tokens, or bodies.
+- [ ] Implement with `http.ServeMux`, `http.MaxBytesReader`, strict JSON, route-pattern logging, and a small in-memory fixed-window limiter. Embed `web/index.html` from `web/assets.go`. Never log raw invite paths, authorization headers, tokens, or bodies.
 - [ ] Run `go test -race ./internal/relay`; expect PASS.
 
 ---
@@ -359,7 +359,7 @@ Expected: image builds and health check succeeds.
 ## Execution waves
 
 ```text
-Wave 1: Task 1 (website/docs) || Task 2 (Go foundation)
+Wave 1: Task 1 (web/docs) || Task 2 (Go foundation)
 Wave 2: Task 3
 Wave 3: Task 4, then Task 5
 Wave 4: Task 6 || Task 7

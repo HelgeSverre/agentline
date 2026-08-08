@@ -35,6 +35,9 @@ func TestLifecyclePersistsCredentialsAndCursor(t *testing.T) {
 	var created map[string]any
 	json.Unmarshal([]byte(out), &created)
 	invite := created["invite_url"].(string)
+	if created["inspect_url"] == "" {
+		t.Fatalf("create omitted inspection URL: %s", out)
+	}
 	if !strings.Contains(out, "participant_token") {
 		t.Fatalf("create must return connection information: %s", out)
 	}
@@ -144,7 +147,7 @@ func TestServerStartsAndStopsWithContext(t *testing.T) {
 func TestMCPRejectsArgumentsWithoutWritingProtocolOutput(t *testing.T) {
 	var out, stderr bytes.Buffer
 	code := Run(context.Background(), []string{"mcp", "extra"}, strings.NewReader(""), &out, &stderr, Dependencies{})
-	if code == 0 || out.Len() != 0 || !strings.Contains(stderr.String(), "usage: agentline mcp") {
+	if code == 0 || out.Len() != 0 || !strings.Contains(stderr.String(), `unknown command "extra" for "agentline mcp"`) {
 		t.Fatalf("code=%d out=%q err=%q", code, out.String(), stderr.String())
 	}
 }
@@ -159,10 +162,17 @@ func TestLocalStopOutputAndInvalidSubcommand(t *testing.T) {
 	if code != 0 || out != `{"status":"stopped"}` || stderr != "" {
 		t.Fatalf("json: code=%d out=%q err=%q", code, out, stderr)
 	}
-	for _, args := range [][]string{{"local"}, {"local", "start"}, {"local", "stop", "extra"}} {
-		if code, _, stderr := run(t, root, args...); code == 0 || !strings.Contains(stderr, "usage: agentline local stop") {
+	code, out, stderr = run(t, root, "local", "stop", "--json")
+	if code != 0 || out != `{"status":"stopped"}` || stderr != "" {
+		t.Fatalf("json anywhere: code=%d out=%q err=%q", code, out, stderr)
+	}
+	for _, args := range [][]string{{"local", "start"}, {"local", "stop", "extra"}} {
+		if code, _, stderr := run(t, root, args...); code == 0 || !strings.Contains(stderr, "unknown command") {
 			t.Fatalf("args=%v code=%d err=%q", args, code, stderr)
 		}
+	}
+	if code, out, _ := run(t, root, "local"); code != 0 || !strings.Contains(out, "Usage:") {
+		t.Fatalf("bare local: code=%d out=%q", code, out)
 	}
 }
 
@@ -300,6 +310,88 @@ func TestSetupSupportsInterspersedRemoveFlag(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("remove failed: %v", err)
+	}
+}
+
+func TestRootHelpShowsCommandsAndBareInvocationListsUsage(t *testing.T) {
+	for _, args := range [][]string{{}, {"--help"}, {"-h"}, {"help"}} {
+		code, out, stderr := run(t, t.TempDir(), args...)
+		if code != 0 || stderr != "" {
+			t.Fatalf("args=%v code=%d err=%q", args, code, stderr)
+		}
+		for _, command := range []string{"create", "join", "send", "wait", "done", "status", "list", "mcp", "server", "local", "setup", "doctor"} {
+			if !strings.Contains(out, command) {
+				t.Fatalf("args=%v help missing %q: %q", args, command, out)
+			}
+		}
+	}
+}
+
+func TestPerCommandHelpFlagAndHelpTopicAreEquivalent(t *testing.T) {
+	for _, name := range []string{"create", "join", "send", "read", "wait", "done", "status", "list", "mcp", "server", "local", "setup", "doctor"} {
+		code, flagOut, flagErr := run(t, t.TempDir(), name, "--help")
+		if code != 0 || flagErr != "" || !strings.Contains(flagOut, "Usage:") {
+			t.Fatalf("%s --help: code=%d out=%q err=%q", name, code, flagOut, flagErr)
+		}
+		code, topicOut, topicErr := run(t, t.TempDir(), "help", name)
+		if code != 0 || topicErr != "" || topicOut != flagOut {
+			t.Fatalf("help %s != %s --help: out=%q flag=%q", name, name, topicOut, flagOut)
+		}
+	}
+}
+
+func TestVersionOutput(t *testing.T) {
+	for _, args := range [][]string{{"--version"}, {"-v"}} {
+		code, out, stderr := run(t, t.TempDir(), args...)
+		if code != 0 || stderr != "" || !strings.HasPrefix(out, "agentline ") {
+			t.Fatalf("args=%v code=%d out=%q err=%q", args, code, out, stderr)
+		}
+	}
+}
+
+func TestJSONFlagIsGlobalAndListNeverPrintsTokens(t *testing.T) {
+	root := t.TempDir()
+	config := localconfig.Store{Root: root}
+	config.SaveRoom(modelCredential("one", "team", "http://127.0.0.1:1", "secret-one"))
+	config.SaveRoom(modelCredential("two", "other", "http://127.0.0.1:1", "secret-two"))
+
+	code, out, stderr := run(t, root, "list")
+	if code != 0 || stderr != "" || !strings.Contains(out, "team") || !strings.Contains(out, "other") || !strings.Contains(out, "http://127.0.0.1:1") {
+		t.Fatalf("list human: code=%d out=%q err=%q", code, out, stderr)
+	}
+	if strings.Contains(out, "secret") {
+		t.Fatalf("list leaked tokens: %q", out)
+	}
+
+	code, out, stderr = run(t, root, "list", "--json")
+	if code != 0 || stderr != "" {
+		t.Fatalf("list json: code=%d err=%q", code, stderr)
+	}
+	var rooms []map[string]any
+	if err := json.Unmarshal([]byte(out), &rooms); err != nil || len(rooms) != 2 {
+		t.Fatalf("list json rooms=%v err=%v", rooms, err)
+	}
+	if strings.Contains(out, "secret") || strings.Contains(out, "token") {
+		t.Fatalf("list json leaked credentials: %q", out)
+	}
+
+	if code, out, stderr := run(t, t.TempDir(), "--json", "list"); code != 0 || out != "[]" || stderr != "" {
+		t.Fatalf("empty list: code=%d out=%q err=%q", code, out, stderr)
+	}
+}
+
+func TestUsageErrorsSuggestHelp(t *testing.T) {
+	code, out, stderr := run(t, t.TempDir(), "frobnicate")
+	if code == 0 || out != "" || !strings.Contains(stderr, "unknown command \"frobnicate\"") || !strings.Contains(stderr, "--help") {
+		t.Fatalf("unknown: code=%d out=%q err=%q", code, out, stderr)
+	}
+	code, _, stderr = run(t, t.TempDir(), "read", "--after", "nope")
+	if code == 0 || !strings.Contains(stderr, "see 'agentline read --help'") {
+		t.Fatalf("flag error: code=%d err=%q", code, stderr)
+	}
+	code, _, stderr = run(t, t.TempDir(), "send", "--bogus", "hi")
+	if code == 0 || !strings.Contains(stderr, "unknown flag") {
+		t.Fatalf("unknown flag: code=%d err=%q", code, stderr)
 	}
 }
 
