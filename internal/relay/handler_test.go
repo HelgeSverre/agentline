@@ -250,7 +250,7 @@ func TestRoomLifecycleAndEndpoints(t *testing.T) {
 	}
 	bob := claimed["participant_token"].(string)
 	resp, failure := f.request(http.MethodPost, "/v1/invites/"+invite+"/claim", "", map[string]string{"name": "eve"})
-	assertError(t, resp, failure, http.StatusConflict, "invite_already_claimed")
+	assertError(t, resp, failure, http.StatusConflict, "room_full")
 
 	resp, got := f.request(http.MethodGet, "/v1/rooms/"+roomID, alice, nil)
 	if resp.StatusCode != http.StatusOK || got["status"] != "active" {
@@ -313,7 +313,12 @@ func TestAuthenticationValidationBodyAndRateLimits(t *testing.T) {
 
 func TestWaitWakesTimesOutAndCancels(t *testing.T) {
 	f := newFixture(t)
-	roomID, token, _ := f.room()
+	roomID, token, invite := f.room()
+	resp, claimed := f.request(http.MethodPost, "/v1/invites/"+invite+"/claim", "", map[string]string{"name": "bob"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claim: %d %#v", resp.StatusCode, claimed)
+	}
+	peer := claimed["participant_token"].(string)
 	type result struct {
 		resp *http.Response
 		body map[string]any
@@ -324,7 +329,7 @@ func TestWaitWakesTimesOutAndCancels(t *testing.T) {
 		wake <- result{r, b}
 	}()
 	time.Sleep(30 * time.Millisecond)
-	f.request(http.MethodPost, "/v1/rooms/"+roomID+"/messages", token, map[string]string{"id": "wake", "body": "hi"})
+	f.request(http.MethodPost, "/v1/rooms/"+roomID+"/messages", peer, map[string]string{"id": "wake", "body": "hi"})
 	got := <-wake
 	if got.resp.StatusCode != http.StatusOK || got.body["status"] != "message" {
 		t.Fatalf("wake: %d %#v", got.resp.StatusCode, got.body)
@@ -344,6 +349,105 @@ func TestWaitWakesTimesOutAndCancels(t *testing.T) {
 	cancel()
 	if err := <-done; err == nil {
 		t.Fatal("cancelled request unexpectedly succeeded")
+	}
+}
+
+func TestWaitSkipsSelfAuthoredMessage(t *testing.T) {
+	f := newFixture(t)
+	roomID, token, _ := f.room()
+	f.request(http.MethodPost, "/v1/rooms/"+roomID+"/messages", token, map[string]string{"id": "self", "body": "mine"})
+
+	resp, got := f.request(http.MethodGet, "/v1/rooms/"+roomID+"/wait?after=0&timeout=0", token, nil)
+	if resp.StatusCode != http.StatusOK || got["status"] != "timeout" || got["after"] != float64(1) {
+		t.Fatalf("self skip: %d %#v", resp.StatusCode, got)
+	}
+}
+
+func TestWaitHiddenPrivateMessageDoesNotWakeOrLeakAndAdvancesCursor(t *testing.T) {
+	f := newFixture(t)
+	roomID, aliceToken, invite := f.room()
+	resp, claimed := f.request(http.MethodPost, "/v1/invites/"+invite+"/claim", "", map[string]string{"name": "bob"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("claim: %d %#v", resp.StatusCode, claimed)
+	}
+	alice, err := f.store.Authenticate(context.Background(), roomID, aliceToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := f.store.Authenticate(context.Background(), roomID, claimed["participant_token"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.Append(context.Background(), store.AppendParams{RoomID: roomID, ParticipantID: bob.ID, MessageID: "private", To: bob.ID, Body: "secret", Kind: "message"}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, got := f.request(http.MethodGet, "/v1/rooms/"+roomID+"/wait?after=0&timeout=0", aliceToken, nil)
+	if resp.StatusCode != http.StatusOK || got["status"] != "timeout" || got["after"] != float64(1) {
+		t.Fatalf("hidden private wait: %d %#v (alice=%s)", resp.StatusCode, got, alice.ID)
+	}
+}
+
+func TestWaitReturnsSelfAuthoredDone(t *testing.T) {
+	f := newFixture(t)
+	roomID, token, _ := f.room()
+	f.request(http.MethodPost, "/v1/rooms/"+roomID+"/done", token, map[string]string{"id": "done"})
+
+	resp, got := f.request(http.MethodGet, "/v1/rooms/"+roomID+"/wait?after=0&timeout=0", token, nil)
+	if resp.StatusCode != http.StatusOK || got["status"] != "done" || got["sequence"] != float64(1) {
+		t.Fatalf("self done: %d %#v", resp.StatusCode, got)
+	}
+}
+
+type recheckStore struct {
+	store.Store
+	onSecondScan func()
+	scans        int
+}
+
+func (s *recheckStore) MessagesAfter(ctx context.Context, roomID, participantID string, sequence int64, limit int, skipSelf bool) (store.VisibleMessages, error) {
+	s.scans++
+	if s.scans == 2 {
+		s.onSecondScan()
+	}
+	return s.Store.MessagesAfter(ctx, roomID, participantID, sequence, limit, skipSelf)
+}
+
+func TestWaitReturnsMessageFoundBySubscribeRecheck(t *testing.T) {
+	data, err := store.OpenSQLite(":memory:", time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { data.Close() })
+	created, err := data.CreateRoom(context.Background(), store.CreateRoomParams{Name: "room", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := data.ClaimInvite(context.Background(), created.InviteToken, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped := &recheckStore{Store: data}
+	wrapped.onSecondScan = func() {
+		if _, err := data.Append(context.Background(), store.AppendParams{RoomID: created.Room.ID, ParticipantID: bob.Participant.ID, MessageID: "race", Body: "arrived", Kind: "message"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := httptest.NewServer(NewHandler(wrapped, Config{WaitMax: 50 * time.Millisecond}, time.Now))
+	t.Cleanup(server.Close)
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/rooms/"+created.Room.ID+"/wait?after=0&timeout=0.05", nil)
+	req.Header.Set("Authorization", "Bearer "+created.CreatorToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != "message" || got["message"].(map[string]any)["id"] != "race" {
+		t.Fatalf("subscribe recheck = %#v", got)
 	}
 }
 

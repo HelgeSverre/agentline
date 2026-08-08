@@ -352,8 +352,14 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request) {
 		}
 		after = visible.Cursor
 		if len(visible.Messages) > 0 {
+			m := visible.Messages[0]
 			unsubscribe()
-			continue
+			if m.Kind == "done" {
+				writeJSON(w, http.StatusOK, map[string]any{"status": "done", "ended_by": m.SenderName, "sequence": m.Sequence})
+			} else {
+				writeJSON(w, http.StatusOK, map[string]any{"status": "message", "message": m})
+			}
+			return
 		}
 		select {
 		case <-ch:

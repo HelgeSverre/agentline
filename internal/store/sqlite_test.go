@@ -521,6 +521,24 @@ func TestMessagesAfterReturnsOnlyParticipantVisibleHistory(t *testing.T) {
 	}
 }
 
+func TestMessagesAfterRejectsUnknownAndCrossRoomParticipant(t *testing.T) {
+	s, _, _ := openTestStore(t)
+	ctx := context.Background()
+	first, err := s.CreateRoom(ctx, CreateRoomParams{Name: "first", CreatorName: "alice", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.CreateRoom(ctx, CreateRoomParams{Name: "second", CreatorName: "mallory", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, participantID := range []string{"unknown", second.Creator.ID} {
+		if _, err := s.MessagesAfter(ctx, first.Room.ID, participantID, 0, 10, false); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("participant %q: %v", participantID, err)
+		}
+	}
+}
+
 func TestWaitScanSkipsSelfAndInvisibleEventsWhileAdvancingCursor(t *testing.T) {
 	s, _, _ := openTestStore(t)
 	created, _, carol := appendVisibilityMatrix(t, s)
