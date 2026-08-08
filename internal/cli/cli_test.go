@@ -250,6 +250,13 @@ func TestCreateAcceptsDaysAndRejectsInvalidTTLBeforeNetwork(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsExplicitZeroCapacityBeforeNetwork(t *testing.T) {
+	code, _, stderr := run(t, t.TempDir(), "create", "--max-participants=0")
+	if code == 0 || !strings.Contains(stderr, "max-participants must be a positive integer") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
 func TestOmittedRoomRejectsAmbiguousCredentials(t *testing.T) {
 	root := t.TempDir()
 	config := localconfig.Store{Root: root}

@@ -28,11 +28,11 @@ func (a *app) newCreateCommand() *cobra.Command {
 	o.ttl = durationValue(24 * time.Hour)
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "create a room and print its one-use invite",
-		Long:  "Create a temporary two-agent room and store your participant credential. Share the printed invite URL with your peer; it can be claimed exactly once.",
+		Short: "create a room and print a reusable invite",
+		Long:  "Create a temporary room and store your participant credential. Share the printed invite URL with collaborators; each claim gets a separate credential until an optional capacity is reached.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.create(o, cmd.Flags().Changed("local"), cmd.Flags().Changed("server"))
+			return a.create(o, cmd.Flags().Changed("local"), cmd.Flags().Changed("server"), cmd.Flags().Changed("max-participants"))
 		},
 	}
 	cmd.Flags().StringVar(&o.name, "name", "agent", "participant name")
@@ -44,7 +44,7 @@ func (a *app) newCreateCommand() *cobra.Command {
 	return cmd
 }
 
-func (a *app) create(o *createOpts, localExplicit, serverExplicit bool) error {
+func (a *app) create(o *createOpts, localExplicit, serverExplicit, capacityExplicit bool) error {
 	if o.local && serverExplicit {
 		return errors.New("--local and --server cannot be used together")
 	}
@@ -76,7 +76,7 @@ func (a *app) create(o *createOpts, localExplicit, serverExplicit bool) error {
 		return fmt.Errorf("invalid server URL: %w", err)
 	}
 	var capacity *int
-	if o.maxParticipants < 0 {
+	if capacityExplicit && o.maxParticipants <= 0 {
 		return errors.New("max-participants must be a positive integer")
 	}
 	if o.maxParticipants > 0 {
