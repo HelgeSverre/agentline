@@ -1,0 +1,8 @@
+.git
+.superpowers
+bin
+browser
+dist
+*.db
+*.db-shm
+*.db-wal

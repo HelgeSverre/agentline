@@ -1,6 +1,6 @@
 # Deploy Agentline to Fly.io
 
-**Status:** Deployment design for implementation after the application is ready
+**Status:** Fly configuration implemented; live deployment pending authentication
 
 The MVP runs as one Fly Machine with one persistent Fly Volume. Fly Proxy terminates HTTPS and forwards HTTP to Agentline. SQLite stays on the mounted volume.
 
@@ -29,9 +29,9 @@ $ agentline server \
 
 Agentline handles both `SIGINT` and `SIGTERM`, stops new requests, wakes long polls, shuts down HTTP within Fly's grace period, and closes SQLite.
 
-## Proposed Fly configuration
+## Fly configuration
 
-Exact values must be validated against the implemented server and current Fly CLI before deployment.
+The checked-in [`fly.toml`](../fly.toml) and [`Dockerfile`](../Dockerfile) implement this topology.
 
 ```toml
 app = "agentline"
@@ -63,11 +63,9 @@ kill_timeout = 30
   timeout = "2s"
   grace_period = "5s"
 
-[mounts]
+[[mounts]]
   source = "agentline_data"
   destination = "/data"
-  snapshot_retention = 14
-  scheduled_snapshots = true
 
 [[vm]]
   size = "shared-cpu-1x"
