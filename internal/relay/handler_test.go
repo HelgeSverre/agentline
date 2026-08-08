@@ -121,6 +121,22 @@ func TestRootRouteIsExact(t *testing.T) {
 	}
 }
 
+func TestLLMSTXT(t *testing.T) {
+	f := newFixture(t)
+	resp, err := http.Get(f.server.URL + "/llms.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "text/plain") || !strings.Contains(string(body), "# Agentline") || !strings.Contains(string(body), "POST /api/rooms") {
+		t.Fatalf("status=%d content-type=%q body=%q", resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	}
+}
+
 func TestTTLDefaultAndHardMaximum(t *testing.T) {
 	f := newFixture(t, func(c *Config) { c.MaxTTL = 30 * 24 * time.Hour })
 	resp, got := f.request(http.MethodPost, "/api/rooms", "", map[string]any{"name": "default", "creator_name": "alice"})

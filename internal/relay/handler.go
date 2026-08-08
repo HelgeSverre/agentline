@@ -77,6 +77,7 @@ func NewHandler(data store.Store, config Config, now func() time.Time) http.Hand
 	h := &handler{store: data, config: config, now: now, createLimit: newLimiter(time.Hour, config.CreatePerHour, now), sendLimit: newLimiter(time.Minute, config.SendPerMinute, now), waits: make(map[string]*waitGroup)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.index)
+	mux.HandleFunc("GET /llms.txt", h.llms)
 	mux.HandleFunc("GET /install.sh", h.install)
 	mux.HandleFunc("GET /join/{token}", h.join)
 	mux.HandleFunc("GET /inspect/{token}", h.inspectPage)
@@ -107,6 +108,13 @@ func (h *handler) logRequests(next http.Handler) http.Handler {
 func (h *handler) index(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(web.IndexHTML)
+}
+
+func (h *handler) llms(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(web.LLMSTXT)
 }
 
 func (h *handler) install(w http.ResponseWriter, r *http.Request) {

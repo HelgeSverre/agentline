@@ -7,6 +7,11 @@ import _ "embed"
 //go:embed index.html
 var IndexHTML []byte
 
+// LLMSTXT is the concise machine-readable guide served at /llms.txt.
+//
+//go:embed llms.txt
+var LLMSTXT []byte
+
 // InspectHTML and InspectCSS are the embedded capability-scoped room viewer.
 //
 //go:embed inspect.html
