@@ -80,19 +80,19 @@ func NewHandler(data store.Store, config Config, now func() time.Time) http.Hand
 	mux.HandleFunc("GET /install.sh", h.install)
 	mux.HandleFunc("GET /join/{token}", h.join)
 	mux.HandleFunc("GET /healthz", h.health)
-	mux.HandleFunc("POST /v1/rooms", h.createRoom)
-	mux.HandleFunc("POST /v1/invites/{token}/claim", h.claimInvite)
-	mux.HandleFunc("GET /v1/rooms/{id}", h.getRoom)
-	mux.HandleFunc("POST /v1/rooms/{id}/messages", h.sendMessage)
-	mux.HandleFunc("GET /v1/rooms/{id}/messages", h.messages)
-	mux.HandleFunc("GET /v1/rooms/{id}/wait", h.wait)
-	mux.HandleFunc("POST /v1/rooms/{id}/done", h.done)
+	mux.HandleFunc("POST /v2/rooms", h.createRoom)
+	mux.HandleFunc("POST /v2/invites/{token}/claim", h.claimInvite)
+	mux.HandleFunc("GET /v2/rooms/{id}", h.getRoom)
+	mux.HandleFunc("POST /v2/rooms/{id}/messages", h.sendMessage)
+	mux.HandleFunc("GET /v2/rooms/{id}/messages", h.messages)
+	mux.HandleFunc("GET /v2/rooms/{id}/wait", h.wait)
+	mux.HandleFunc("POST /v2/rooms/{id}/done", h.done)
 	return h.logRequests(mux)
 }
 
 func (h *handler) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/v") && !strings.HasPrefix(r.URL.Path, "/v1/") {
+		if strings.HasPrefix(r.URL.Path, "/v") && !strings.HasPrefix(r.URL.Path, "/v2/") {
 			writeError(w, http.StatusNotFound, "unsupported_api_version", "The API version is not supported.")
 			log.Printf("relay request method=%s route=%q", r.Method, "unsupported-version")
 			return
@@ -157,14 +157,15 @@ func (h *handler) createRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Name        string  `json:"name"`
-		CreatorName string  `json:"creator_name"`
-		TTLSeconds  float64 `json:"ttl_seconds"`
+		Name            string  `json:"name"`
+		CreatorName     string  `json:"creator_name"`
+		TTLSeconds      float64 `json:"ttl_seconds"`
+		MaxParticipants *int    `json:"max_participants"`
 	}
 	if !decodeJSON(w, r, 4096, &in) {
 		return
 	}
-	if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.CreatorName) == "" || in.TTLSeconds < 0 {
+	if strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.CreatorName) == "" || in.TTLSeconds < 0 || in.MaxParticipants != nil && *in.MaxParticipants <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid_request", "The request is invalid.")
 		return
 	}
@@ -181,8 +182,7 @@ func (h *handler) createRoom(w http.ResponseWriter, r *http.Request) {
 			ttl = h.config.MaxTTL
 		}
 	}
-	maxParticipants := 2
-	created, err := h.store.CreateRoom(r.Context(), store.CreateRoomParams{Name: in.Name, CreatorName: in.CreatorName, TTL: ttl, MaxParticipants: &maxParticipants})
+	created, err := h.store.CreateRoom(r.Context(), store.CreateRoomParams{Name: in.Name, CreatorName: in.CreatorName, TTL: ttl, MaxParticipants: in.MaxParticipants})
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -219,6 +219,12 @@ func (h *handler) getRoom(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
+	participants, err := h.store.Participants(r.Context(), room.ID)
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	room.Participants = participants
 	writeJSON(w, http.StatusOK, room)
 }
 
@@ -235,6 +241,7 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		ID      string `json:"id"`
 		Body    string `json:"body"`
 		ReplyTo string `json:"reply_to"`
+		To      string `json:"to"`
 	}
 	if !decodeJSON(w, r, h.config.MessageBytes+4096, &in) {
 		return
@@ -247,8 +254,12 @@ func (h *handler) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusRequestEntityTooLarge, "body_too_large", "The message body is too large.")
 		return
 	}
-	m, err := h.store.Append(r.Context(), store.AppendParams{RoomID: r.PathValue("id"), ParticipantID: p.ID, MessageID: in.ID, Body: in.Body, ReplyTo: in.ReplyTo, Kind: "message"})
+	m, err := h.store.Append(r.Context(), store.AppendParams{RoomID: r.PathValue("id"), ParticipantID: p.ID, MessageID: in.ID, Body: in.Body, ReplyTo: in.ReplyTo, To: in.To, Kind: "message"})
 	if err != nil {
+		if in.To != "" && errors.Is(err, store.ErrInvalid) {
+			writeError(w, http.StatusBadRequest, "invalid_recipient", "The recipient is not a participant in this room.")
+			return
+		}
 		h.fail(w, err)
 		return
 	}
@@ -270,7 +281,7 @@ func (h *handler) messages(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": visible.Messages})
+	writeJSON(w, http.StatusOK, map[string]any{"messages": visible.Messages, "cursor": visible.Cursor})
 }
 
 func (h *handler) done(w http.ResponseWriter, r *http.Request) {
@@ -302,7 +313,7 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	after, ok := queryInt(w, r, "after", 0)
+	scanAfter, ok := queryInt(w, r, "after", 0)
 	if !ok {
 		return
 	}
@@ -318,12 +329,12 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request) {
 	deadline := time.NewTimer(duration)
 	defer deadline.Stop()
 	for {
-		visible, err := h.store.MessagesAfter(r.Context(), r.PathValue("id"), p.ID, after, 1, true)
+		visible, err := h.store.MessagesAfter(r.Context(), r.PathValue("id"), p.ID, scanAfter, 1, true)
 		if err != nil {
 			h.fail(w, err)
 			return
 		}
-		after = visible.Cursor
+		scanAfter = visible.Cursor
 		if len(visible.Messages) > 0 {
 			m := visible.Messages[0]
 			if m.Kind == "done" {
@@ -344,13 +355,13 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request) {
 		}
 		ch, unsubscribe := h.subscribe(room.ID)
 		// Recheck after subscribing so an append between the query and subscription cannot be missed.
-		visible, err = h.store.MessagesAfter(r.Context(), room.ID, p.ID, after, 1, true)
+		visible, err = h.store.MessagesAfter(r.Context(), room.ID, p.ID, scanAfter, 1, true)
 		if err != nil {
 			unsubscribe()
 			h.fail(w, err)
 			return
 		}
-		after = visible.Cursor
+		scanAfter = visible.Cursor
 		if len(visible.Messages) > 0 {
 			m := visible.Messages[0]
 			unsubscribe()
@@ -366,7 +377,7 @@ func (h *handler) wait(w http.ResponseWriter, r *http.Request) {
 			unsubscribe()
 		case <-deadline.C:
 			unsubscribe()
-			writeJSON(w, http.StatusOK, map[string]any{"status": "timeout", "room": room.Name, "after": after, "instruction": "No message arrived. Call wait_for_message again if a response is still expected."})
+			writeJSON(w, http.StatusOK, map[string]any{"status": "timeout", "room": room.Name, "sequence": scanAfter, "instruction": "No message arrived. Call wait_for_message again if a response is still expected."})
 			return
 		case <-r.Context().Done():
 			unsubscribe()
@@ -423,8 +434,6 @@ func (h *handler) fail(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrUnauthorized):
 		writeError(w, http.StatusUnauthorized, "unauthorized", "A valid participant credential is required.")
-	case errors.Is(err, store.ErrInviteClaimed):
-		writeError(w, http.StatusConflict, "invite_already_claimed", "This invite has already been claimed.")
 	case errors.Is(err, store.ErrInviteInvalid):
 		writeError(w, http.StatusNotFound, "invite_invalid", "This invite is invalid.")
 	case errors.Is(err, store.ErrRoomNotFound):

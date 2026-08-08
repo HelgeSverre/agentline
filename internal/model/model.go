@@ -7,12 +7,13 @@ type RoomStatus string
 type MessageKind string
 
 type Room struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Status          RoomStatus `json:"status"`
-	MaxParticipants *int       `json:"max_participants"`
-	CreatedAt       time.Time  `json:"created_at"`
-	ExpiresAt       time.Time  `json:"expires_at"`
+	ID              string        `json:"id"`
+	Name            string        `json:"name"`
+	Status          RoomStatus    `json:"status"`
+	MaxParticipants *int          `json:"max_participants"`
+	Participants    []Participant `json:"participants,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	ExpiresAt       time.Time     `json:"expires_at"`
 }
 
 type Participant struct {
