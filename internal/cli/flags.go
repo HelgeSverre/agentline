@@ -55,6 +55,10 @@ type doneOpts struct {
 	messageID string
 }
 
+type channelOpts struct {
+	room string
+}
+
 type serverOpts struct {
 	listen        string
 	publicURL     string

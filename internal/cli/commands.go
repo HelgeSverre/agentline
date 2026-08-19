@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HelgeSverre/agentline/internal/channel"
 	"github.com/HelgeSverre/agentline/internal/client"
 	"github.com/HelgeSverre/agentline/internal/localconfig"
 	"github.com/HelgeSverre/agentline/internal/localserver"
@@ -378,6 +379,24 @@ func (a *app) newMCPCommand() *cobra.Command {
 			return mcpserver.Run(a.ctx, mcpserver.Dependencies{Config: a.deps.Config, HTTP: a.deps.HTTP})
 		},
 	}
+}
+
+func (a *app) newChannelCommand() *cobra.Command {
+	o := &channelOpts{}
+	cmd := &cobra.Command{
+		Use:   "channel",
+		Short: "serve the experimental Claude Channel adapter",
+		Long: "Run the experimental Claude Channel adapter over stdio. Unlike 'agentline mcp', which delivers only while the session polls, a Channel pushes collaborator messages into an idle running Claude Code session and exposes an agentline_reply tool.\n\n" +
+			"Channels are a Claude Code research preview. Custom channels are not on the approved allowlist, so start Claude with:\n\n" +
+			"  claude --dangerously-load-development-channels server:agentline-channel\n\n" +
+			"That flag skips the allowlist only; the channelsEnabled organization policy still applies.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return channel.Run(a.ctx, a.in, a.out, channel.Dependencies{Config: a.deps.Config, HTTP: a.deps.HTTP, Room: o.room})
+		},
+	}
+	cmd.Flags().StringVar(&o.room, "room", "", "watch only this saved room; default watches every saved room")
+	return cmd
 }
 
 func (a *app) newServerCommand() *cobra.Command {

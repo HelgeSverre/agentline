@@ -75,6 +75,7 @@ func (a *app) newRoot() *cobra.Command {
 		a.newStatusCommand(),
 		a.newListCommand(),
 		a.newMCPCommand(),
+		a.newChannelCommand(),
 		a.newServerCommand(),
 		a.newLocalCommand(),
 		a.newSetupCommand(),
