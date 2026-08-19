@@ -498,13 +498,14 @@ func (a *app) newSetupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup TARGET",
 		Short: "install or remove harness integrations",
-		Long:  "Plan or apply integration changes for a coding-agent harness (claude, codex, amp, pi, opencode, or mcp): skills, MCP registration, and native adapters. Shows pending changes and asks before writing unless --yes is set. --remove deletes only Agentline-owned entries.",
+		Long:  "Plan or apply integration changes for a coding-agent harness (claude, codex, amp, pi, opencode, or mcp): skills and MCP registration. Shows pending changes and asks before writing unless --yes is set.\n\n--native additionally installs the target's experimental idle-push adapter: the Claude Channel for claude, or the plugin for amp, pi, and opencode. Codex and mcp have none. A run without --native leaves an installed adapter alone; --remove deletes every Agentline-owned entry, adapter included.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.setup(o, args[0])
 		},
 	}
 	cmd.Flags().BoolVar(&o.yes, "yes", false, "apply without confirmation")
+	cmd.Flags().BoolVar(&o.native, "native", false, "also install the target's experimental native adapter (Claude Channel, or the Amp, Pi, or OpenCode plugin)")
 	cmd.Flags().BoolVar(&o.remove, "remove", false, "remove Agentline-owned setup")
 	return cmd
 }
@@ -522,7 +523,7 @@ func (a *app) setup(o *setupOpts, target string) error {
 	if err != nil {
 		return err
 	}
-	plan, err := setupconfig.BuildPlan(target, home, executable, o.remove)
+	plan, err := setupconfig.BuildPlan(target, home, executable, setupconfig.Options{Native: o.native, Remove: o.remove})
 	if err != nil {
 		return err
 	}

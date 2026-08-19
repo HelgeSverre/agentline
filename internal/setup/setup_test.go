@@ -19,7 +19,7 @@ func TestBuildPlanAllTargetsUsesAbsoluteExecutableAndIsIdempotent(t *testing.T) 
 		t.Run(target, func(t *testing.T) {
 			home := t.TempDir()
 			executable := filepath.Join(home, "bin", "agentline")
-			plan, err := BuildPlan(target, home, executable, false)
+			plan, err := BuildPlan(target, home, executable, Options{})
 			if err != nil || len(plan.Changes) == 0 {
 				t.Fatalf("plan=%+v err=%v", plan, err)
 			}
@@ -31,7 +31,7 @@ func TestBuildPlanAllTargetsUsesAbsoluteExecutableAndIsIdempotent(t *testing.T) 
 			if err := Apply(plan); err != nil {
 				t.Fatal(err)
 			}
-			again, err := BuildPlan(target, home, executable, false)
+			again, err := BuildPlan(target, home, executable, Options{})
 			if err != nil || len(again.Changes) != 0 {
 				t.Fatalf("second plan=%+v err=%v", again, err)
 			}
@@ -51,7 +51,7 @@ func TestJSONTargetsPreserveUnrelatedSettingsBackupAndRemoveOwnership(t *testing
 			if err := os.WriteFile(path, original, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			plan, err := BuildPlan(target, home, "/usr/local/bin/agentline", false)
+			plan, err := BuildPlan(target, home, "/usr/local/bin/agentline", Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -65,7 +65,7 @@ func TestJSONTargetsPreserveUnrelatedSettingsBackupAndRemoveOwnership(t *testing
 			if _, err := os.Stat(path + ".agentline.bak"); err != nil {
 				t.Fatalf("backup: %v", err)
 			}
-			remove, err := BuildPlan(target, home, "/usr/local/bin/agentline", true)
+			remove, err := BuildPlan(target, home, "/usr/local/bin/agentline", Options{Remove: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,7 +89,7 @@ func TestCodexRefusesConflictingOwnedBlockAndPreservesTOML(t *testing.T) {
 	if err := os.WriteFile(path, []byte("model = \"gpt\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := BuildPlan("codex", home, "/opt/agentline", false)
+	plan, err := BuildPlan("codex", home, "/opt/agentline", Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,14 +103,14 @@ func TestCodexRefusesConflictingOwnedBlockAndPreservesTOML(t *testing.T) {
 	if err := os.WriteFile(path, []byte(codexBegin+"\nbroken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildPlan("codex", home, "/opt/agentline", false); err == nil {
+	if _, err := BuildPlan("codex", home, "/opt/agentline", Options{}); err == nil {
 		t.Fatal("accepted unterminated owned block")
 	}
 }
 
 func TestAmpPackagesExactToolsAndRemovalOnlyRemovesSkill(t *testing.T) {
 	home := t.TempDir()
-	plan, err := BuildPlan("amp", home, "/opt/agentline", false)
+	plan, err := BuildPlan("amp", home, "/opt/agentline", Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestAmpPackagesExactToolsAndRemovalOnlyRemovesSkill(t *testing.T) {
 	if err := Apply(plan); err != nil {
 		t.Fatal(err)
 	}
-	remove, _ := BuildPlan("amp", home, "/opt/agentline", true)
+	remove, _ := BuildPlan("amp", home, "/opt/agentline", Options{Remove: true})
 	if err := Apply(remove); err != nil {
 		t.Fatal(err)
 	}
@@ -155,12 +155,12 @@ func TestBuildPlanRefusesUnownedArtifacts(t *testing.T) {
 	for _, target := range []string{"claude", "opencode"} {
 		t.Run(target, func(t *testing.T) {
 			home := t.TempDir()
-			_, err := BuildPlan(target, home, "/opt/agentline", false)
+			_, err := BuildPlan(target, home, "/opt/agentline", Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			path := ""
-			for _, spec := range targetArtifacts(target, home) {
+			for _, spec := range targetArtifacts(target, home, Options{}) {
 				if spec.unit != "file" {
 					path = spec.path
 					break
@@ -175,7 +175,7 @@ func TestBuildPlanRefusesUnownedArtifacts(t *testing.T) {
 			if err := os.WriteFile(path, []byte("mine"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := BuildPlan(target, home, "/opt/agentline", false); err == nil {
+			if _, err := BuildPlan(target, home, "/opt/agentline", Options{}); err == nil {
 				t.Fatal("accepted unowned artifact")
 			}
 		})
@@ -186,7 +186,7 @@ func TestManifestPermitsExecutableRelocationAndRejectsOwnedUnitMutation(t *testi
 	for _, target := range []string{"claude", "codex", "amp"} {
 		t.Run(target, func(t *testing.T) {
 			home := t.TempDir()
-			first, err := BuildPlan(target, home, "/old/agentline", false)
+			first, err := BuildPlan(target, home, "/old/agentline", Options{})
 			if err != nil || Apply(first) != nil {
 				t.Fatalf("install: %v", err)
 			}
@@ -194,11 +194,11 @@ func TestManifestPermitsExecutableRelocationAndRejectsOwnedUnitMutation(t *testi
 			if info, err := os.Stat(manifest); err != nil || info.Mode().Perm() != 0o600 {
 				t.Fatalf("manifest mode: %v %v", info, err)
 			}
-			update, err := BuildPlan(target, home, "/new/agentline", false)
+			update, err := BuildPlan(target, home, "/new/agentline", Options{})
 			if err != nil || Apply(update) != nil {
 				t.Fatalf("relocate: %v", err)
 			}
-			spec := targetArtifacts(target, home)[len(targetArtifacts(target, home))-1]
+			spec := targetArtifacts(target, home, Options{})[len(targetArtifacts(target, home, Options{}))-1]
 			data, _ := os.ReadFile(spec.path)
 			if spec.unit == "file" {
 				data = append(data, 'x')
@@ -208,7 +208,7 @@ func TestManifestPermitsExecutableRelocationAndRejectsOwnedUnitMutation(t *testi
 			} else {
 				_ = os.WriteFile(spec.path, bytes.Replace(data, []byte("/new/agentline"), []byte("/tampered"), 1), 0o600)
 			}
-			if _, err := BuildPlan(target, home, "/third/agentline", false); err == nil {
+			if _, err := BuildPlan(target, home, "/third/agentline", Options{}); err == nil {
 				t.Fatal("accepted mutated owned unit")
 			}
 		})
@@ -224,7 +224,7 @@ func TestBuildPlanAdoptsUnmanifestedSkill(t *testing.T) {
 	if err := os.WriteFile(path, []byte(sharedSkill), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	plan, err := BuildPlan("pi", home, "/opt/agentline", false)
+	plan, err := BuildPlan("pi", home, "/opt/agentline", Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,8 +238,8 @@ func TestBuildPlanAdoptsUnmanifestedSkill(t *testing.T) {
 
 func TestConcurrentApplyRefusesStalePlanWithoutLosingSharedSkill(t *testing.T) {
 	home := t.TempDir()
-	a, _ := BuildPlan("codex", home, "/opt/agentline", false)
-	b, _ := BuildPlan("pi", home, "/opt/agentline", false)
+	a, _ := BuildPlan("codex", home, "/opt/agentline", Options{})
+	b, _ := BuildPlan("pi", home, "/opt/agentline", Options{})
 	start := make(chan struct{})
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -268,7 +268,7 @@ func TestConcurrentApplyRefusesStalePlanWithoutLosingSharedSkill(t *testing.T) {
 
 func TestApplyFailureRestoresPriorRecoveryBackup(t *testing.T) {
 	home := t.TempDir()
-	first, _ := BuildPlan("claude", home, "/old/agentline", false)
+	first, _ := BuildPlan("claude", home, "/old/agentline", Options{})
 	if err := Apply(first); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestApplyFailureRestoresPriorRecoveryBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(path)
-	update, err := BuildPlan("claude", home, "/new/agentline", false)
+	update, err := BuildPlan("claude", home, "/new/agentline", Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +326,7 @@ func TestCodexRejectsUnmarkedAndMalformedRegionsAndReplacesInPlace(t *testing.T)
 
 func TestApplyWritesEveryPlannedArtifact(t *testing.T) {
 	home := t.TempDir()
-	plan, _ := BuildPlan("claude", home, "/opt/agentline", false)
+	plan, _ := BuildPlan("claude", home, "/opt/agentline", Options{})
 	if err := Apply(plan); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestDoctorReportsBinaryRelayCredentialsSkillAndRegistration(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("x"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	plan, _ := BuildPlan("claude", home, exe, false)
+	plan, _ := BuildPlan("claude", home, exe, Options{})
 	if err := Apply(plan); err != nil {
 		t.Fatal(err)
 	}

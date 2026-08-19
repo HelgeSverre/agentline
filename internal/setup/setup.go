@@ -54,12 +54,34 @@ type Report struct {
 	Checks []Check `json:"checks"`
 }
 
-func BuildPlan(target, home, executable string, remove bool) (Plan, error) {
+// Options selects which parts of a target's integration a plan covers.
+type Options struct {
+	// Native also installs the target's experimental idle-push adapter: the
+	// Claude Channel for claude, the plugin for amp, pi, and opencode.
+	//
+	// A plan without Native and without Remove leaves an already installed
+	// adapter untouched, so a routine re-run never silently uninstalls it.
+	Native bool
+	// Remove deletes every Agentline-owned artifact, native adapter included.
+	Remove bool
+}
+
+// native reports whether the plan should touch the target's native adapter at
+// all, and whether that means removing it.
+func (o Options) native() (touch, remove bool) { return o.Native || o.Remove, o.Remove }
+
+func BuildPlan(target, home, executable string, opts Options) (Plan, error) {
+	remove := opts.Remove
 	if home == "" {
 		return Plan{}, errors.New("home directory is required")
 	}
 	if !filepath.IsAbs(executable) {
 		return Plan{}, errors.New("agentline executable path must be absolute")
+	}
+	if opts.Native {
+		if _, ok := nativeAdapterFor(target); !ok {
+			return Plan{}, fmt.Errorf("%s has no native adapter; omit --native", target)
+		}
 	}
 	root, err := setupRoot(home)
 	if err != nil {
@@ -97,6 +119,15 @@ func BuildPlan(target, home, executable string, remove bool) (Plan, error) {
 			}
 		}
 	}
+	touchNative, removeNative := opts.native()
+	if touchNative {
+		if err := addNativePlugin(&plan, target, home, executable, removeNative); err != nil {
+			return Plan{}, err
+		}
+		if adapter, ok := nativeAdapterFor(target); ok && !removeNative {
+			plan.Warnings = append(plan.Warnings, adapter.warning)
+		}
+	}
 	var path string
 	switch target {
 	case "claude":
@@ -108,7 +139,7 @@ func BuildPlan(target, home, executable string, remove bool) (Plan, error) {
 	case "mcp":
 		path = filepath.Join(home, ".config/agentline/mcp.json")
 	case "amp", "pi":
-		if err := addOwnershipChanges(&plan, target, home, remove); err != nil {
+		if err := addOwnershipChanges(&plan, target, home, opts); err != nil {
 			return Plan{}, err
 		}
 		return plan, nil
@@ -126,6 +157,13 @@ func BuildPlan(target, home, executable string, remove bool) (Plan, error) {
 	if err != nil {
 		return Plan{}, err
 	}
+	// The Claude Channel is a second MCP entry in the same file, so it must be
+	// folded into this edit rather than planned as a competing change.
+	if target == "claude" && touchNative {
+		if after, err = editChannelJSON(after, executable, removeNative); err != nil {
+			return Plan{}, err
+		}
+	}
 	if !bytes.Equal(before, after) {
 		description := "update Agentline MCP registration"
 		if target == "mcp" {
@@ -133,7 +171,7 @@ func BuildPlan(target, home, executable string, remove bool) (Plan, error) {
 		}
 		plan.Changes = append(plan.Changes, Change{path, description, before, after})
 	}
-	if err := addOwnershipChanges(&plan, target, home, remove); err != nil {
+	if err := addOwnershipChanges(&plan, target, home, opts); err != nil {
 		return Plan{}, err
 	}
 	for _, c := range plan.Changes {
@@ -161,6 +199,16 @@ func ownedFileChange(path, description string, installed []byte, remove bool) (*
 }
 
 func editJSON(target string, before []byte, executable string, remove bool) ([]byte, error) {
+	key := "mcpServers"
+	if target == "opencode" {
+		key = "mcp"
+	}
+	return editJSONEntry(target, key, "agentline", jsonEntry(target, executable), before, remove)
+}
+
+// editJSONEntry adds or removes one named entry under a top-level object key,
+// preserving every sibling entry and any unrelated configuration.
+func editJSONEntry(target, key, name string, want map[string]any, before []byte, remove bool) ([]byte, error) {
 	if remove && len(bytes.TrimSpace(before)) == 0 {
 		return nil, nil
 	}
@@ -176,10 +224,6 @@ func editJSON(target string, before []byte, executable string, remove bool) ([]b
 			return nil, fmt.Errorf("decode %s config: trailing data", target)
 		}
 	}
-	key := "mcpServers"
-	if target == "opencode" {
-		key = "mcp"
-	}
 	m, ok := root[key].(map[string]any)
 	if !ok {
 		if root[key] != nil {
@@ -187,11 +231,10 @@ func editJSON(target string, before []byte, executable string, remove bool) ([]b
 		}
 		m = map[string]any{}
 	}
-	want := jsonEntry(target, executable)
 	if remove {
-		delete(m, "agentline")
+		delete(m, name)
 	} else {
-		m["agentline"] = want
+		m[name] = want
 	}
 	if len(m) == 0 {
 		if _, existed := root[key]; !existed {
@@ -297,7 +340,8 @@ func ampMCP(executable string) []byte {
 
 type artifactSpec struct{ path, unit string }
 
-func addOwnershipChanges(plan *Plan, target, home string, remove bool) error {
+func addOwnershipChanges(plan *Plan, target, home string, opts Options) error {
+	remove := opts.Remove
 	root := filepath.Dir(plan.lockPath)
 	manifestPath := filepath.Join(root, "setup-ownership.json")
 	manifestBefore, err := readOptional(manifestPath)
@@ -313,7 +357,7 @@ func addOwnershipChanges(plan *Plan, target, home string, remove bool) error {
 			m.Artifacts = map[string]ownedArtifact{}
 		}
 	}
-	specs := targetArtifacts(target, home)
+	specs := targetArtifacts(target, home, opts)
 	for _, spec := range specs {
 		key := target + ":" + spec.unit + ":" + spec.path
 		current, err := ownedUnit(spec, nil)
@@ -355,7 +399,7 @@ func addOwnershipChanges(plan *Plan, target, home string, remove bool) error {
 	return nil
 }
 
-func targetArtifacts(target, home string) []artifactSpec {
+func targetArtifacts(target, home string, opts Options) []artifactSpec {
 	var specs []artifactSpec
 	var skill string
 	switch target {
@@ -380,6 +424,14 @@ func targetArtifacts(target, home string) []artifactSpec {
 		specs = append(specs, artifactSpec{filepath.Join(home, ".config/agentline/mcp.json"), "json:mcpServers"})
 	case "amp":
 		specs = append(specs, artifactSpec{filepath.Join(home, ".config/agents/skills/agentline/mcp.json"), "file"})
+	}
+	// The native adapter is tracked only when the plan touches it, so a routine
+	// re-run without --native leaves an installed adapter and its manifest
+	// record alone.
+	if touch, _ := opts.native(); touch {
+		if spec, ok := nativeArtifact(target, home); ok {
+			specs = append(specs, spec)
+		}
 	}
 	return specs
 }
@@ -426,9 +478,15 @@ func ownedUnit(spec artifactSpec, content []byte) ([]byte, error) {
 	if err := decoder.Decode(&root); err != nil {
 		return nil, err
 	}
+	// A JSON unit is "json:KEY" for the default "agentline" entry, or
+	// "json:KEY:ENTRY" to own one specific sibling entry.
 	key := strings.TrimPrefix(spec.unit, "json:")
+	name := "agentline"
+	if k, n, ok := strings.Cut(key, ":"); ok {
+		key, name = k, n
+	}
 	entries, _ := root[key].(map[string]any)
-	entry, ok := entries["agentline"]
+	entry, ok := entries[name]
 	if !ok {
 		return nil, nil
 	}
@@ -743,7 +801,7 @@ func Doctor(ctx context.Context, target, home, executable, relayURL string) Repo
 	}
 	sort.Strings(targets)
 	for _, t := range targets {
-		p, err := BuildPlan(t, home, executable, false)
+		p, err := BuildPlan(t, home, executable, Options{})
 		if err != nil {
 			add(t, "fail", err.Error())
 			continue
@@ -779,8 +837,40 @@ func Doctor(ctx context.Context, target, home, executable, relayURL string) Repo
 				add(t+" MCP", "pass", message)
 			}
 		}
+		addNativeCheck(add, t, home, executable)
 	}
 	return r
+}
+
+// addNativeCheck reports on a target's optional native adapter, but only once
+// one is installed. An absent adapter is not reported at all: it is an
+// experimental enhancement that most setups deliberately skip, and the portable
+// CLI and MCP paths work without it.
+func addNativeCheck(add func(name, status, message string), target, home, executable string) {
+	spec, ok := nativeArtifact(target, home)
+	if !ok {
+		return
+	}
+	current, err := ownedUnit(spec, nil)
+	if err != nil || len(current) == 0 {
+		return
+	}
+	name := target + " native adapter"
+	p, err := BuildPlan(target, home, executable, Options{Native: true})
+	if err != nil {
+		add(name, "warn", err.Error())
+		return
+	}
+	desired, err := ownedUnit(spec, plannedAfter(&p, spec.path))
+	if err != nil {
+		add(name, "warn", err.Error())
+		return
+	}
+	if !bytes.Equal(current, desired) {
+		add(name, "warn", "installed but outdated; run 'agentline setup "+target+" --native'")
+		return
+	}
+	add(name, "pass", "installed at "+spec.path)
 }
 
 func configRoot(home string) string {

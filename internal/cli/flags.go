@@ -68,6 +68,7 @@ type serverOpts struct {
 
 type setupOpts struct {
 	yes    bool
+	native bool
 	remove bool
 }
 
