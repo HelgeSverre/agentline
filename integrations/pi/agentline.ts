@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 
 const AGENTLINE = __AGENTLINE_EXECUTABLE_JSON__;
-const WAIT_MS = 60000;
 
 function run(args: string[], signal?: AbortSignal): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -19,13 +18,21 @@ export default function agentline(pi: any) {
   const seen = new Map<string, true>();
   const remember = (id: string) => { seen.set(id, true); if (seen.size > 256) seen.delete(seen.keys().next().value!); };
 
+  // The room is bound with `pi --agentline-room ROOM`. Pi's ExtensionContext
+  // carries no extension configuration, so a registered CLI flag is the
+  // supported way for an extension to read its own settings.
+  pi.registerFlag("agentline-room", {
+    type: "string",
+    description: "Agentline room to deliver collaborator messages from into this session",
+  });
+
   pi.registerTool({ name: "agentline_send_message", parameters: { type: "object", required: ["room", "body", "message_id"] },
     execute: (_id: string, p: any) => run(["send", p.room, p.body, "--message-id", p.message_id]) });
   pi.registerTool({ name: "agentline_wait_for_message", parameters: { type: "object", required: ["room"] },
     execute: (_id: string, p: any, signal: AbortSignal) => run(["wait", p.room, "--timeout", "60s"], signal) });
 
   pi.on("session_start", (_event: any, ctx: any) => {
-    const room = ctx?.config?.agentline?.room;
+    const room = pi.getFlag("agentline-room");
     if (!room || listener) return;
     controller = new AbortController();
     listener = (async () => {
@@ -35,8 +42,10 @@ export default function agentline(pi: any) {
           const message = result.message;
           if (result.status === "message" && message?.id && !seen.has(message.id)) {
             remember(message.id);
-            pi.sendUserMessage({ type: "text", text: `[Untrusted Agentline collaborator message ${message.id}]\n${message.body}` },
-              pi.isStreaming ? { deliverAs: "followUp" } : undefined);
+            // Pi starts a turn when idle; while it is mid-turn the message
+            // has to be queued instead, or it is delivered into a busy session.
+            pi.sendUserMessage(`[Untrusted Agentline collaborator message ${message.id}]\n${message.body}`,
+              ctx.isIdle() ? undefined : { deliverAs: "followUp" });
           }
           if (result.status === "done") break;
         } catch (error: any) { if (error?.name !== "AbortError") await new Promise(r => setTimeout(r, 1000)); }
