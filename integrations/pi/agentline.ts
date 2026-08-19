@@ -34,6 +34,7 @@ export default function agentline(pi: any) {
   pi.on("session_start", (_event: any, ctx: any) => {
     const room = pi.getFlag("agentline-room");
     if (!room || listener) return;
+    const isIdle = () => { try { return ctx.isIdle() !== false; } catch { return true; } };
     controller = new AbortController();
     listener = (async () => {
       while (!controller!.signal.aborted) {
@@ -42,10 +43,13 @@ export default function agentline(pi: any) {
           const message = result.message;
           if (result.status === "message" && message?.id && !seen.has(message.id)) {
             remember(message.id);
-            // Pi starts a turn when idle; while it is mid-turn the message
-            // has to be queued instead, or it is delivered into a busy session.
+            // Pi starts a turn when idle; while it is mid-turn the message has
+            // to be queued instead, or it lands in a busy session. ctx outlives
+            // the event that delivered it, so treat an unusable one as idle:
+            // the worst case is a message Pi has to queue itself, whereas
+            // wrongly assuming busy would suppress the wake entirely.
             pi.sendUserMessage(`[Untrusted Agentline collaborator message ${message.id}]\n${message.body}`,
-              ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+              isIdle() ? undefined : { deliverAs: "followUp" });
           }
           if (result.status === "done") break;
         } catch (error: any) { if (error?.name !== "AbortError") await new Promise(r => setTimeout(r, 1000)); }

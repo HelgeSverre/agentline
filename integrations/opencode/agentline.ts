@@ -22,11 +22,16 @@ export const AgentlinePlugin = async ({ client }: any) => {
   const controllers = new Map<string, AbortController>();
   const seen = new Map<string, true>();
   const running = new Set<string>();
+  const bound = new Map<string, string>();
   const remember = (id: string) => { seen.set(id, true); if (seen.size > 256) seen.delete(seen.keys().next().value!); };
 
+  // Rebinding a session to a different room replaces the previous listener
+  // rather than silently keeping the old one.
   const start = (session: string, room: string) => {
-    if (controllers.has(session)) return false;
-    const controller = new AbortController(); controllers.set(session, controller);
+    if (bound.get(session) === room) return false;
+    controllers.get(session)?.abort();
+    const controller = new AbortController();
+    controllers.set(session, controller); bound.set(session, room);
     void (async () => {
       while (!controller.signal.aborted) {
         try {
@@ -45,7 +50,9 @@ export const AgentlinePlugin = async ({ client }: any) => {
           if (result.status === "done") break;
         } catch (error: any) { if (error?.name !== "AbortError") await new Promise(r => setTimeout(r, 1000)); }
       }
-    })().finally(() => controllers.delete(session));
+      // Only clear the entry if this listener is still the current one; a
+      // rebind may already have installed its replacement.
+    })().finally(() => { if (controllers.get(session) === controller) controllers.delete(session); });
     return true;
   };
 
@@ -62,12 +69,15 @@ export const AgentlinePlugin = async ({ client }: any) => {
           const started = start(context.sessionID, args.room);
           return started
             ? `Bound room ${args.room} to this session; native idle wake is experimental.`
-            : `This session is already bound to an Agentline room.`;
+            : `This session is already bound to room ${args.room}.`;
         },
       }),
     },
     event: async ({ event }: any) => {
-      if (event.type === "session.deleted") controllers.get(event.properties.info.id)?.abort();
+      if (event.type === "session.deleted") {
+        const session = event.properties.info.id;
+        controllers.get(session)?.abort(); bound.delete(session);
+      }
     },
   };
 };

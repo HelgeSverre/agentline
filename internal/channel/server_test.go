@@ -3,6 +3,7 @@ package channel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -271,5 +272,96 @@ func TestDegradedRelayDoesNotBusyLoop(t *testing.T) {
 		cancel()
 		stdin.Close()
 		relayServer.Close()
+	}
+}
+
+// TestBacklogIsCappedAndExcludesOwnMessages covers a channel starting on a room
+// with unread history. Claude Code hands queued notifications to the session
+// together on its next turn, so an uncapped backlog arrives as one huge turn.
+// The read endpoint does not filter the caller's own messages, so the adapter
+// must, or it replays the session's own replies back into it.
+func TestBacklogIsCappedAndExcludesOwnMessages(t *testing.T) {
+	db, err := store.OpenSQLite(filepath.Join(t.TempDir(), "relay.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayServer := httptest.NewServer(relay.NewHandler(db, relay.Config{}, time.Now))
+	t.Cleanup(func() { relayServer.Close(); db.Close() })
+	httpClient := relayServer.Client()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	created, err := client.New(relayServer.URL, "", httpClient).CreateRoom(ctx, "backlog", "alice", time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := client.New(relayServer.URL, "", httpClient).ClaimInvite(ctx, created.InviteURL, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := client.New(relayServer.URL, created.ParticipantToken, httpClient)
+	bob := client.New(relayServer.URL, joined.ParticipantToken, httpClient)
+
+	const peerMessages = maxBacklog + 5
+	for i := 0; i < peerMessages; i++ {
+		if _, err := bob.Send(ctx, created.Room.ID, fmt.Sprintf("peer-%d", i), fmt.Sprintf("peer message %d", i), "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Alice's own message must never be replayed into her session.
+	if _, err := alice.Send(ctx, created.Room.ID, "alice-own", "my own earlier reply", "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	config := localconfig.Store{Root: t.TempDir()}
+	if err := config.SaveRoom(model.RoomCredential{
+		RoomID: created.Room.ID, RoomName: created.Room.Name, ServerURL: relayServer.URL,
+		ParticipantID: created.Participant.ID, Token: created.ParticipantToken,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stdinReader, stdin := io.Pipe()
+	stdout, stdoutWriter := io.Pipe()
+	go Run(ctx, stdinReader, stdoutWriter, Dependencies{Config: config, HTTP: httpClient})
+	t.Cleanup(func() { stdin.Close() })
+
+	encoder, decoder := json.NewEncoder(stdin), json.NewDecoder(stdout)
+	send(t, encoder, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+	next(t, decoder)
+	send(t, encoder, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+	// First frame announces the truncation, then exactly maxBacklog messages.
+	first := next(t, decoder)["params"].(map[string]any)
+	firstMeta := first["meta"].(map[string]any)
+	if firstMeta["event"] != "backlog_truncated" || firstMeta["skipped"] != "5" {
+		t.Fatalf("expected a truncation notice for 5 messages, got %#v", firstMeta)
+	}
+
+	var bodies []string
+	for i := 0; i < maxBacklog; i++ {
+		params := next(t, decoder)["params"].(map[string]any)
+		bodies = append(bodies, params["content"].(string))
+	}
+	if !strings.Contains(bodies[0], "peer message 5") {
+		t.Fatalf("backlog should start at the 6th peer message, got %q", bodies[0])
+	}
+	if !strings.Contains(bodies[len(bodies)-1], fmt.Sprintf("peer message %d", peerMessages-1)) {
+		t.Fatalf("backlog should end at the newest peer message, got %q", bodies[len(bodies)-1])
+	}
+	for _, body := range bodies {
+		if strings.Contains(body, "my own earlier reply") {
+			t.Fatal("the channel replayed the session's own message back into it")
+		}
+	}
+
+	// Live delivery continues from the drained cursor.
+	if _, err := bob.Send(ctx, created.Room.ID, "peer-live", "live message", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	live := next(t, decoder)["params"].(map[string]any)
+	if !strings.Contains(live["content"].(string), "live message") {
+		t.Fatalf("live delivery broke after catch-up: %#v", live)
 	}
 }

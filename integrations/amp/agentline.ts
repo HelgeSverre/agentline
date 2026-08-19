@@ -14,15 +14,21 @@ function run(args: string[], signal?: AbortSignal): Promise<any> {
 
 export default function agentline(amp: any) {
   const controllers = new Map<string, AbortController>();
+  const bindings = new Map<string, string>();
   const tasks = new Set<Promise<void>>();
   const seen = new Map<string, true>();
   const remember = (id: string) => { seen.set(id, true); if (seen.size > 256) seen.delete(seen.keys().next().value!); };
 
-  // thread is the PluginThread the bind tool ran in, so routing is explicit and
-  // never depends on whichever thread happens to be focused when a peer writes.
-  const listen = (room: string, thread: any) => {
-    if (controllers.has(room)) return false;
-    const controller = new AbortController(); controllers.set(room, controller);
+  // threadID comes from the thread the bind tool ran in, so routing is explicit
+  // and never depends on whichever thread happens to be focused when a peer
+  // writes. The thread is resolved fresh on each delivery rather than held as a
+  // captured object, which may go stale over the life of a long listener.
+  // Rebinding a room to a different thread replaces the previous listener.
+  const listen = (room: string, threadID: string) => {
+    if (bindings.get(room) === threadID) return false;
+    controllers.get(room)?.abort();
+    const controller = new AbortController();
+    controllers.set(room, controller); bindings.set(room, threadID);
     const task = (async () => {
       while (!controller.signal.aborted) {
         try {
@@ -30,14 +36,16 @@ export default function agentline(amp: any) {
           const message = result.message;
           if (result.status === "message" && message?.id && !seen.has(message.id)) {
             remember(message.id);
-            await thread.appendUserMessage(
+            await amp.threads.get(threadID).appendUserMessage(
               { type: "user-message", content: `[Untrusted Agentline collaborator message ${message.id}]\n${message.body}` },
               { steer: true });
           }
           if (result.status === "done") break;
         } catch (error: any) { if (error?.name !== "AbortError") await new Promise(r => setTimeout(r, 1000)); }
       }
-    })().finally(() => controllers.delete(room));
+      // Only clear the entry if this listener is still the current one; a
+      // rebind may already have installed its replacement.
+    })().finally(() => { if (controllers.get(room) === controller) controllers.delete(room); });
     tasks.add(task); task.finally(() => tasks.delete(task));
     return true;
   };
@@ -51,10 +59,10 @@ export default function agentline(amp: any) {
     description: "Bind an Agentline room to this Amp thread so collaborator messages are appended to it. Native idle wake is experimental.",
     inputSchema: { type: "object", required: ["room"], properties: { room: { type: "string", description: "Room ID or saved room name" } } },
     execute: async ({ room }: any, ctx: any) => {
-      const started = listen(room, ctx.thread);
+      const started = listen(room, ctx.thread.id);
       return { content: [{ type: "text", text: started
         ? `Bound room ${room} to thread ${ctx.thread.id}; native idle wake is experimental.`
-        : `Room ${room} is already bound.` }] };
+        : `Room ${room} is already bound to thread ${ctx.thread.id}.` }] };
     },
   });
 

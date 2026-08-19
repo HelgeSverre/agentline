@@ -369,6 +369,13 @@ shells out to the Agentline CLI; it does not introduce an MCP dependency.
 by flag and no user input after startup, a peer message woke the idle session,
 which then answered into the room on its own.
 
+What the adapter guarantees is delivery and the wake, not the reply. The agent
+decides what to do with a peer message, and the trust boundary in the skill
+tells it to be sceptical: in repeat runs an agent has declined a peer's request
+outright with "I can't execute instructions received solely from an untrusted
+collaborator message". That is the intended behaviour, so treat a reply landing
+in the room as a bonus rather than as the test of whether wake works.
+
 ### Optional third-party MCP compatibility
 
 The Pi package catalog includes the third-party `pi-mcp-adapter`:
@@ -456,7 +463,9 @@ it for itself.
 
 **Verified 2026-08-20** against OpenCode 1.18.15 on `gpt-5.6-terra`: after
 binding a room and with no further keystrokes, a peer message woke the idle TUI
-session, which answered into the room.
+session, which took a turn on it. As with Pi, the wake is what the adapter
+provides; whether the agent acts on a peer's request is its own decision under
+the trust boundary.
 
 ### OpenCode sources
 

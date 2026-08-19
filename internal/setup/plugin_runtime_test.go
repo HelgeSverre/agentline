@@ -53,13 +53,15 @@ func TestPluginsBindThroughDocumentedHostAPIs(t *testing.T) {
 		"opencode": {`agentline_bind_room: tool(`, `context.sessionID`},
 		// Amp's configuration store is async, so binding goes through the tool
 		// whose context carries the PluginThread to append to.
-		"amp": {`agentline_bind_room`, `ctx.thread`, `thread.appendUserMessage(`},
+		"amp": {`agentline_bind_room`, `ctx.thread.id`, `amp.threads.get(threadID)`},
 	}
 	forbidden := map[string][]string{
 		"pi":       {`ctx?.config?.agentline`, `pi.isStreaming`},
 		"opencode": {`info?.agentline`},
-		// Property access on the async configuration store always yields undefined.
-		"amp": {`amp.configuration?.agentline`, `amp.threads.get(`},
+		// Property access on the async configuration store always yields
+		// undefined, and the thread must come from the tool context rather than
+		// from an argument the model would have to guess.
+		"amp": {`amp.configuration?.agentline`, `required: ["room", "thread"]`},
 	}
 	for target, fragments := range required {
 		adapter, _ := nativeAdapterFor(target)
