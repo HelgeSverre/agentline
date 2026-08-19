@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -225,5 +227,49 @@ func TestServerDiscoverIsNotImplemented(t *testing.T) {
 	}
 	if response["error"].(map[string]any)["code"] != float64(-32601) {
 		t.Fatalf("response = %#v", response)
+	}
+}
+
+// TestDegradedRelayDoesNotBusyLoop covers a relay that answers a long poll
+// instantly without an event: a "message" with no body, an unrecognised status,
+// or a relay ignoring the timeout. Without a floor on the retry the watcher
+// issued tens of thousands of requests a second against the relay.
+func TestDegradedRelayDoesNotBusyLoop(t *testing.T) {
+	for _, body := range []map[string]any{
+		{"status": "message"},  // status says message, no message body
+		{"status": "confused"}, // unrecognised status
+		{},                     // no status at all
+	} {
+		var calls atomic.Int64
+		relayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			_ = json.NewEncoder(w).Encode(body)
+		}))
+
+		config := localconfig.Store{Root: t.TempDir()}
+		if err := config.SaveRoom(model.RoomCredential{
+			RoomID: "room", RoomName: "room", ServerURL: relayServer.URL, ParticipantID: "p", Token: "t",
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		stdinReader, stdin := io.Pipe()
+		stdout, stdoutWriter := io.Pipe()
+		go func() { _, _ = io.Copy(io.Discard, stdout) }()
+		go Run(ctx, stdinReader, stdoutWriter, Dependencies{Config: config, HTTP: relayServer.Client()})
+
+		encoder := json.NewEncoder(stdin)
+		send(t, encoder, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+		send(t, encoder, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"})
+		time.Sleep(1500 * time.Millisecond)
+
+		// One request per retryBackoff, plus a little slack for scheduling.
+		if n := calls.Load(); n > 6 {
+			t.Errorf("relay answering %v instantly caused %d requests in 1.5s", body, n)
+		}
+		cancel()
+		stdin.Close()
+		relayServer.Close()
 	}
 }

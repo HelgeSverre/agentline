@@ -297,23 +297,24 @@ func (s *server) watch(ctx context.Context, credential model.RoomCredential) {
 	c := client.New(credential.ServerURL, credential.Token, s.deps.HTTP)
 	cursor := credential.Cursor
 	for ctx.Err() == nil {
+		started := time.Now()
 		result, err := c.Wait(ctx, credential.RoomID, cursor, waitTimeout)
 		if err != nil {
 			if ctx.Err() != nil || terminal(err) {
 				return
 			}
-			select {
-			case <-ctx.Done():
+			if !sleep(ctx, retryBackoff) {
 				return
-			case <-time.After(retryBackoff):
 			}
 			continue
 		}
+		pushed := false
 		switch result.Status {
 		case "message":
 			if result.Message == nil {
-				continue
+				break
 			}
+			pushed = true
 			cursor = result.Message.Sequence
 			s.push("[Untrusted Agentline collaborator message]\n"+result.Message.Body, map[string]string{
 				"room":       credential.RoomName,
@@ -343,6 +344,25 @@ func (s *server) watch(ctx context.Context, credential model.RoomCredential) {
 				cursor = result.Sequence
 			}
 		}
+		// A long poll that returns an event, or that blocked for its full
+		// duration, is normal. Anything else — an unrecognised status, a
+		// "message" with no body, a relay ignoring the timeout — would spin
+		// this loop into thousands of requests a second, so floor it.
+		if !pushed && time.Since(started) < retryBackoff && !sleep(ctx, retryBackoff) {
+			return
+		}
+	}
+}
+
+// sleep waits for d, reporting false if ctx was cancelled first.
+func sleep(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
