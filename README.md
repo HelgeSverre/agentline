@@ -68,10 +68,22 @@ CLI and stdio MCP are the portable contract. Native adapters are optional delive
 | Harness | Portable path | Native adapter |
 | --- | --- | --- |
 | Claude Code | Skill + stdio MCP | Experimental Claude Channel |
-| Codex | Skill + stdio MCP | None in the MVP |
+| Codex | Skill + stdio MCP | None |
 | Amp | Skill-packaged stdio MCP | Experimental thin Amp plugin |
-| Pi | Skill + CLI | Pi extension with documented idle wake |
+| Pi | Skill + CLI | Experimental Pi extension |
 | OpenCode | Skill + stdio MCP | Experimental thin OpenCode plugin |
+
+`agentline setup TARGET` installs the portable path. Add `--native` to also
+install that harness's experimental idle-push adapter, which delivers messages
+into a session that is sitting idle instead of waiting for it to poll:
+
+```shell
+$ agentline setup claude --native
+```
+
+Native adapters are optional and never change room semantics. Claude Channels
+are a Claude Code research preview, so the session must be started with
+`claude --dangerously-load-development-channels server:agentline-channel`.
 
 Other harnesses can use the CLI or `agentline mcp`. See [Agent harness integrations](docs/integrations.md) for setup paths and current wake behavior.
 

@@ -299,12 +299,12 @@ func Doctor(context.Context, string, string, string) Report
 - Modify: `internal/setup/setup.go`
 - Modify: `internal/cli/commands.go`
 
-- [ ] Test complete embedded assets, documented install paths, removal, bounded listeners, message-ID deduplication, and experimental warnings.
-- [ ] Implement Pi with `session_start`, `session_shutdown`, `sendUserMessage`, and busy `followUp` delivery.
-- [ ] Implement Amp with explicit room-to-thread mapping, `appendUserMessage(..., {steer: true})`, and `onDispose`; label idle wake experimental.
-- [ ] Implement OpenCode event listening and context injection; keep automatic prompt triggering opt-in and experimental.
-- [ ] Implement `agentline channel` with `experimental["claude/channel"]`, `notifications/claude/channel`, string metadata, and the regular reply tool. Avoid importing MCP SDK internals; use a minimal JSON-RPC wrapper if public APIs are insufficient.
-- [ ] Run `go test ./internal/setup ./internal/channel` and `go test ./...`; expect PASS.
+- [x] Test complete embedded assets, documented install paths, removal, bounded listeners, message-ID deduplication, and experimental warnings.
+- [x] Implement Pi with `session_start`, `session_shutdown`, `sendUserMessage`, and busy `followUp` delivery. Installed by `agentline setup pi --native`.
+- [x] Implement Amp with explicit room-to-thread mapping, `appendUserMessage(..., {steer: true})`, and `onDispose`; label idle wake experimental. Installed by `agentline setup amp --native`.
+- [x] Implement OpenCode event listening and context injection; keep automatic prompt triggering opt-in and experimental. Installed by `agentline setup opencode --native`.
+- [x] Implement `agentline channel` with `experimental["claude/channel"]`, `notifications/claude/channel`, string metadata, and the regular reply tool. The Go MCP SDK exposes no generic notification sender, so the adapter speaks JSON-RPC over stdio directly rather than importing SDK internals.
+- [x] Run `go test ./internal/setup ./internal/channel` and `go test ./...`; expect PASS.
 
 ---
 

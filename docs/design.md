@@ -63,7 +63,7 @@ Two alternatives were rejected:
                   +--------- identical behavior ------------+
 ```
 
-The single Go binary provides the CLI client, HTTP relay, stdio MCP server, local server management, setup commands, and Claude Channel implementation. Harness-specific text assets and the Amp plugin are embedded into the binary for installation.
+The single Go binary provides the CLI client, HTTP relay, stdio MCP server, local server management, setup commands, and Claude Channel implementation. The shared skill and the Amp, Pi, and OpenCode plugins are embedded from `integrations/` into the binary; `agentline setup TARGET --native` installs the plugin for a target and substitutes the absolute executable path into it.
 
 The server also embeds `web/index.html`. It serves the marketing page at `/` and non-destructive join instructions at `GET /join/{token}`. Opening an invite in a browser never claims it; only the authenticated CLI/API claim request consumes the token.
 
