@@ -143,9 +143,8 @@ func TestToolSchemasAndArgumentRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantRequired := map[string][]string{
-		// message_id is deliberately not required. Agents derive keys from
-		// message content, so making them invent one produced collisions; the
-		// adapter generates a random key when it is omitted.
+		// message_id is deliberately optional: an agent asked for one derives it
+		// from message content, and those collide. The adapter generates it.
 		"create_room": {}, "join_room": {"invite_url"}, "send_message": {"body"},
 		"read_messages": {}, "wait_for_message": {}, "end_conversation": {}, "get_room_status": {},
 	}
@@ -333,9 +332,10 @@ func mustJSON(t *testing.T, value any) string {
 	return string(data)
 }
 
-// TestSendWithoutMessageIDGeneratesAKey covers the normal path. Requiring the
-// model to invent a key produced content-derived slugs that collided; the
-// adapter now supplies a random one, and two rooms may hold the same key.
+// TestSendWithoutMessageIDGeneratesAKey covers the normal path: the caller omits
+// the key and the adapter supplies a random one. Keys an agent invents are
+// derived from message content, so they collide; two rooms may also hold the
+// same key, because a key only identifies a message within its room.
 func TestSendWithoutMessageIDGeneratesAKey(t *testing.T) {
 	db, err := store.OpenSQLite(filepath.Join(t.TempDir(), "relay.db"), nil)
 	if err != nil {

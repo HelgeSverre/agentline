@@ -39,10 +39,10 @@ func TestPluginsAreValidTypeScript(t *testing.T) {
 	}
 }
 
-// TestPluginsBindThroughDocumentedHostAPIs guards the defect that made the Pi
-// and OpenCode plugins inert: each read its room from a config path the host
-// never populates, so the listener could not start and nothing failed loudly.
-// Every binding must come from an API the host actually documents.
+// TestPluginsBindThroughDocumentedHostAPIs pins each plugin to a host API that
+// exists. A binding read from a config path the host never populates leaves the
+// listener unstarted and raises no error anywhere, and nothing else in the build
+// compiles these files.
 func TestPluginsBindThroughDocumentedHostAPIs(t *testing.T) {
 	required := map[string][]string{
 		// Pi's ExtensionContext has no config field; a registered CLI flag is

@@ -71,12 +71,15 @@ type Options struct {
 func (o Options) native() (touch, remove bool) { return o.Native || o.Remove, o.Remove }
 
 func BuildPlan(target, home, executable string, opts Options) (Plan, error) {
-	remove := opts.Remove
 	if home == "" {
 		return Plan{}, errors.New("home directory is required")
 	}
 	if !filepath.IsAbs(executable) {
 		return Plan{}, errors.New("agentline executable path must be absolute")
+	}
+	h, known := harnesses[target]
+	if !known {
+		return Plan{}, fmt.Errorf("unknown setup target %q", target)
 	}
 	if opts.Native {
 		if _, ok := nativeAdapterFor(target); !ok {
@@ -88,37 +91,29 @@ func BuildPlan(target, home, executable string, opts Options) (Plan, error) {
 		return Plan{}, err
 	}
 	plan := Plan{Target: target, lockPath: filepath.Join(root, "setup.lock")}
-	skillPath := ""
-	switch target {
-	case "claude":
-		skillPath = filepath.Join(home, ".claude/skills/agentline/SKILL.md")
-	case "codex", "pi", "opencode":
-		skillPath = filepath.Join(home, ".agents/skills/agentline/SKILL.md")
-	case "amp":
-		skillPath = filepath.Join(home, ".config/agents/skills/agentline/SKILL.md")
-	case "mcp":
-	default:
-		return Plan{}, fmt.Errorf("unknown setup target %q", target)
-	}
-	if skillPath != "" {
-		change, err := ownedFileChange(skillPath, "install Agentline skill", []byte(sharedSkill), remove)
+	remove := opts.Remove
+
+	add := func(path, description string, content []byte) error {
+		change, err := ownedFileChange(path, description, content, remove)
 		if err != nil {
-			return Plan{}, err
+			return err
 		}
 		if change != nil {
 			plan.Changes = append(plan.Changes, *change)
 		}
-		if target == "amp" {
-			mcpPath := filepath.Join(filepath.Dir(skillPath), "mcp.json")
-			change, err := ownedFileChange(mcpPath, "install Agentline skill MCP configuration", ampMCP(executable), remove)
-			if err != nil {
-				return Plan{}, err
-			}
-			if change != nil {
-				plan.Changes = append(plan.Changes, *change)
-			}
+		return nil
+	}
+	if path := h.skillPath(home); path != "" {
+		if err := add(path, "install Agentline skill", []byte(sharedSkill)); err != nil {
+			return Plan{}, err
 		}
 	}
+	if path := h.packagedMCPPath(home); path != "" {
+		if err := add(path, "install Agentline skill MCP configuration", ampMCP(executable)); err != nil {
+			return Plan{}, err
+		}
+	}
+
 	touchNative, removeNative := opts.native()
 	if touchNative {
 		if err := addNativePlugin(&plan, target, home, executable, removeNative); err != nil {
@@ -128,49 +123,37 @@ func BuildPlan(target, home, executable string, opts Options) (Plan, error) {
 			plan.Warnings = append(plan.Warnings, adapter.warning)
 		}
 	}
-	var path string
-	switch target {
-	case "claude":
-		path = filepath.Join(home, ".claude.json")
-	case "codex":
-		path = filepath.Join(home, ".codex/config.toml")
-	case "opencode":
-		path = filepath.Join(home, ".config/opencode/opencode.json")
-	case "mcp":
-		path = filepath.Join(home, ".config/agentline/mcp.json")
-	case "amp", "pi":
-		if err := addOwnershipChanges(&plan, target, home, opts); err != nil {
+
+	if path := h.configPath(home); path != "" {
+		before, err := readOptional(path)
+		if err != nil {
 			return Plan{}, err
 		}
-		return plan, nil
-	}
-	before, err := readOptional(path)
-	if err != nil {
-		return Plan{}, err
-	}
-	var after []byte
-	if target == "codex" {
-		after, err = editCodex(before, executable, remove)
-	} else {
-		after, err = editJSON(target, before, executable, remove)
-	}
-	if err != nil {
-		return Plan{}, err
-	}
-	// The Claude Channel is a second MCP entry in the same file, so it must be
-	// folded into this edit rather than planned as a competing change.
-	if target == "claude" && touchNative {
-		if after, err = editChannelJSON(after, executable, removeNative); err != nil {
+		var after []byte
+		if h.configUnit == "codex" {
+			after, err = editCodex(before, executable, remove)
+		} else {
+			after, err = editJSON(target, before, executable, remove)
+		}
+		if err != nil {
 			return Plan{}, err
 		}
-	}
-	if !bytes.Equal(before, after) {
-		description := "update Agentline MCP registration"
-		if target == "mcp" {
-			description = "write portable MCP snippet (manual registration required)"
+		// The Claude Channel is a second MCP entry in the same file, so it must
+		// be folded into this edit rather than planned as a competing change.
+		if target == "claude" && touchNative {
+			if after, err = editChannelJSON(after, executable, removeNative); err != nil {
+				return Plan{}, err
+			}
 		}
-		plan.Changes = append(plan.Changes, Change{path, description, before, after})
+		if !bytes.Equal(before, after) {
+			description := "update Agentline MCP registration"
+			if target == "mcp" {
+				description = "write portable MCP snippet (manual registration required)"
+			}
+			plan.Changes = append(plan.Changes, Change{path, description, before, after})
+		}
 	}
+
 	if err := addOwnershipChanges(&plan, target, home, opts); err != nil {
 		return Plan{}, err
 	}
@@ -199,10 +182,7 @@ func ownedFileChange(path, description string, installed []byte, remove bool) (*
 }
 
 func editJSON(target string, before []byte, executable string, remove bool) ([]byte, error) {
-	key := "mcpServers"
-	if target == "opencode" {
-		key = "mcp"
-	}
+	key := strings.TrimPrefix(harnesses[target].configUnit, "json:")
 	return editJSONEntry(target, key, "agentline", jsonEntry(target, executable), before, remove)
 }
 
@@ -400,30 +380,16 @@ func addOwnershipChanges(plan *Plan, target, home string, opts Options) error {
 }
 
 func targetArtifacts(target, home string, opts Options) []artifactSpec {
+	h := harnesses[target]
 	var specs []artifactSpec
-	var skill string
-	switch target {
-	case "claude":
-		skill = filepath.Join(home, ".claude/skills/agentline/SKILL.md")
-	case "codex", "pi", "opencode":
-		skill = filepath.Join(home, ".agents/skills/agentline/SKILL.md")
-	case "amp":
-		skill = filepath.Join(home, ".config/agents/skills/agentline/SKILL.md")
+	if path := h.skillPath(home); path != "" {
+		specs = append(specs, artifactSpec{path, "file"})
 	}
-	if skill != "" {
-		specs = append(specs, artifactSpec{skill, "file"})
+	if path := h.packagedMCPPath(home); path != "" {
+		specs = append(specs, artifactSpec{path, "file"})
 	}
-	switch target {
-	case "claude":
-		specs = append(specs, artifactSpec{filepath.Join(home, ".claude.json"), "json:mcpServers"})
-	case "codex":
-		specs = append(specs, artifactSpec{filepath.Join(home, ".codex/config.toml"), "codex"})
-	case "opencode":
-		specs = append(specs, artifactSpec{filepath.Join(home, ".config/opencode/opencode.json"), "json:mcp"})
-	case "mcp":
-		specs = append(specs, artifactSpec{filepath.Join(home, ".config/agentline/mcp.json"), "json:mcpServers"})
-	case "amp":
-		specs = append(specs, artifactSpec{filepath.Join(home, ".config/agents/skills/agentline/mcp.json"), "file"})
+	if path := h.configPath(home); path != "" {
+		specs = append(specs, artifactSpec{path, h.configUnit})
 	}
 	// The native adapter is tracked only when the plan touches it, so a routine
 	// re-run without --native leaves an installed adapter and its manifest
