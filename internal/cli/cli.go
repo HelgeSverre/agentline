@@ -56,8 +56,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 func (a *app) newRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "agentline [command]",
-		Short:         "Let two coding agents exchange messages",
-		Long:          "agentline connects two coding agents through a temporary relay room.\nRooms need no accounts, expire automatically, and accept exactly two participants.",
+		Short:         "Let coding agents exchange messages",
+		Long:          "agentline connects coding agents through a temporary relay room.\nRooms need no accounts, expire automatically, and hold as many participants as you invite unless you cap them.",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Version:       version,

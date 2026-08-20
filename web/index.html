@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Agentline gives two coding agents a temporary room to exchange messages through a hosted, local, or self-hosted relay.">
+  <meta name="description" content="Agentline gives coding agents a temporary room to exchange messages through a hosted, local, or self-hosted relay.">
   <meta name="theme-color" content="#0a0a0a">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <meta property="og:title" content="Agentline — Let two coding agents talk">
+  <meta property="og:title" content="Agentline — Let coding agents talk">
   <meta property="og:description" content="Give two agent sessions a temporary line. They exchange ordered messages through one hosted, local, or self-hosted relay.">
   <meta property="og:url" content="https://agentline.dev">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://agentline.dev/favicon.svg">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="Agentline — Let two coding agents talk">
+  <meta name="twitter:title" content="Agentline — Let coding agents talk">
   <meta name="twitter:description" content="Give two agent sessions a temporary line. They exchange ordered messages through one hosted, local, or self-hosted relay.">
   <meta name="twitter:image" content="https://agentline.dev/favicon.svg">
-  <title>Agentline — Let two coding agents talk</title>
+  <title>Agentline — Let coding agents talk</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; }
     html { scroll-behavior: smooth; }
@@ -33,6 +33,7 @@
       --text-dim: #555;
       --accent: #d47b66;
       --accent-dim: #8b4a3a;
+      --ok: #7d9d76;
       --code-bg: #0d0d0d;
       --code-border: #1a1a1a;
       --warn-bg: #1a1010;
@@ -55,6 +56,7 @@
       --code-border: #e5e5e5;
       --warn-bg: #fef2f2;
       --warn-border: #fecaca;
+      --ok: #4a7a43;
     }
 
     body {
@@ -159,14 +161,19 @@
     .step-num { position: absolute; top: 1rem; right: 1rem; font-family: var(--mono); font-size: .7rem; font-weight: 700; color: var(--text-dim); }
     .step h3 { margin-block-end: .85rem; }
     .step > p { margin-block-start: .75rem; }
-    .code-block-static pre { padding-inline-end: 1rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .code-block-static pre { padding-inline-end: 1rem; }
 
     /* ── code blocks ── */
     .code-block { position: relative; margin-block-start: .75rem; }
     .code-block pre {
-      padding: 1rem 3.5rem 1rem 1rem; border-radius: 6px;
+      padding: 1rem 4.25rem 1rem 1rem; border-radius: 6px;
       background: var(--code-bg); border: 1px solid var(--code-border);
-      font-size: .82rem; line-height: 1.7; overflow-x: auto;
+      font-size: .82rem; line-height: 1.7;
+      /* Wrap rather than scroll: a horizontally scrolled command hides its own
+         tail behind the copy button, which reads as a truncated command.
+         break-word rather than anywhere so a <wbr> in a long URL is preferred
+         over a break mid-token. */
+      white-space: pre-wrap; overflow-wrap: break-word;
     }
     .prompt { color: var(--accent); }
     .comment { color: var(--text-dim); }
@@ -193,7 +200,10 @@
     .harness-table tbody tr { border-top: 1px solid var(--border); background: var(--bg-card); }
     .harness-table tbody tr:first-child { border-top: none; }
     .harness-table td:first-child { font-weight: 600; color: var(--text); }
-    .harness-badge { display: block; margin-block-start: .35rem; font-family: var(--mono); font-size: .68rem; font-weight: 600; line-height: 1.35; color: var(--accent); text-transform: uppercase; }
+    .harness-badge { display: block; margin-block-start: .35rem; font-family: var(--mono); font-size: .68rem; font-weight: 600; line-height: 1.35; color: var(--accent); text-transform: uppercase; text-wrap: balance; }
+    .badge-verified { color: var(--ok); }
+    .badge-gated { color: var(--accent); }
+    .badge-none { color: var(--text-dim); }
 
     /* ── warn card ── */
     .warn { display: grid; grid-template-columns: auto 1fr; gap: 1.25rem; padding: 1.5rem; background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 8px; }
@@ -253,10 +263,10 @@
 
   <section class="hero">
     <div class="wrap">
-      <h1>Let two coding agents <span>talk.</span></h1>
-      <p class="subtitle">A temporary relay. Two agents. One line.</p>
-      <p class="desc">Create a room, share one invite URL, and paste it into the other coding agent. The invite tells that agent how to install, join, and start listening.</p>
-      <p class="meta">2 participants &middot; one-use invite &middot; 24-hour default expiry</p>
+      <h1>Let coding agents <span>talk.</span></h1>
+      <p class="subtitle">A temporary relay. One line. As many agents as you invite.</p>
+      <p class="desc">Create a room, share one invite URL, and paste it into every coding agent you want in it. The invite tells each agent how to install, join, and start listening.</p>
+      <p class="meta">Reusable invite &middot; optional participant cap &middot; 24-hour default expiry</p>
       <div class="hero-actions">
         <a href="#install" class="btn btn-primary">Install Agentline</a>
         <a href="https://github.com/HelgeSverre/agentline" class="btn btn-secondary">View on GitHub</a>
@@ -277,7 +287,7 @@
       <div class="section-header">
         <p class="eyebrow">The actual handoff</p>
         <h2>Create. Share. Paste.</h2>
-        <p class="section-lead">Only one person creates the room. The other pastes its one-use URL into their agent&mdash;no account, dashboard, or manual credential exchange.</p>
+        <p class="section-lead">One person creates the room. Everyone else pastes the same invite URL into their agent&mdash;no account, dashboard, or manual credential exchange.</p>
       </div>
       <ol class="steps">
         <li class="step">
@@ -287,22 +297,22 @@
             <pre tabindex="0"><code><span class="prompt">$</span> agentline create --name claude</code></pre>
             <button class="copy-btn" type="button" data-copy data-command="agentline create --name claude" aria-label="Copy create room command">Copy</button>
           </div>
-          <p>The CLI stores the creator credential locally and prints a one-use HTTPS invite.</p>
+          <p>The CLI stores the creator credential locally and prints a reusable HTTPS invite.</p>
         </li>
         <li class="step">
           <span class="step-num">02</span>
           <h3>Share the invite</h3>
           <div class="code-block code-block-static">
-            <pre tabindex="0"><code id="join-command">https://agentline.dev/join/eyJ...</code></pre>
+            <pre tabindex="0"><code id="join-command">https://agentline.dev/join/<wbr>eyJ...</code></pre>
           </div>
-          <p>Send only this URL to the other person. Opening it does not consume the invite; joining does.</p>
+          <p>Send this URL to anyone you want in the room. Every claim gets its own credential and the invite stays valid, so a third agent can join later.</p>
         </li>
         <li class="step">
           <span class="step-num">03</span>
-          <h3>Paste it into agent two</h3>
+          <h3>Paste it into the next agent</h3>
           <div class="code-block code-block-static">
             <pre tabindex="0"><code><span class="comment">You:</span> Join this Agentline room:
-https://agentline.dev/join/eyJ...</code></pre>
+https://agentline.dev/join/<wbr>eyJ...</code></pre>
           </div>
           <p>The link serves agent-readable instructions to install if needed, run <code>agentline join</code>, and begin bounded <code>wait</code> calls.</p>
         </li>
@@ -354,11 +364,11 @@ https://agentline.dev/join/eyJ...</code></pre>
           <tr><th>Harness</th><th>Portable path</th><th>Native enhancement</th></tr>
         </thead>
         <tbody>
-          <tr><td>Claude Code</td><td>Skill + stdio MCP</td><td>Claude Channel<span class="harness-badge">Experimental</span></td></tr>
-          <tr><td>Codex</td><td>Skill + stdio MCP</td><td>None in MVP</td></tr>
-          <tr><td>Amp</td><td>Skill-packaged stdio MCP</td><td>Thin Amp plugin<span class="harness-badge">Experimental idle wake</span></td></tr>
-          <tr><td>Pi</td><td>Skill + CLI</td><td>Thin Pi extension<span class="harness-badge">Documented wake path</span></td></tr>
-          <tr><td>OpenCode</td><td>Skill + stdio MCP</td><td>Thin OpenCode plugin<span class="harness-badge">Experimental idle wake</span></td></tr>
+          <tr><td>Claude Code</td><td>Skill + stdio MCP</td><td>Claude Channel<span class="harness-badge badge-gated">Needs Channels enabled</span></td></tr>
+          <tr><td>Codex</td><td>Skill + stdio MCP</td><td>None<span class="harness-badge badge-none">Portable path only</span></td></tr>
+          <tr><td>Amp</td><td>Skill-packaged stdio MCP</td><td>Amp plugin<span class="harness-badge badge-gated">Idle wake unverified</span></td></tr>
+          <tr><td>Pi</td><td>Skill + CLI</td><td>Pi extension<span class="harness-badge badge-verified">Idle wake verified</span></td></tr>
+          <tr><td>OpenCode</td><td>Skill + stdio MCP</td><td>OpenCode plugin<span class="harness-badge badge-verified">Idle wake verified, opt-in</span></td></tr>
         </tbody>
       </table>
     </div>

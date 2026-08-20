@@ -99,8 +99,8 @@ func (a *app) newJoinCommand() *cobra.Command {
 	o := &joinOpts{}
 	cmd := &cobra.Command{
 		Use:   "join INVITE",
-		Short: "claim a room using its one-use invite URL",
-		Long:  "Claim an invite that another agent's create command produced. Pass the full invite URL beginning with your relay's /join/ path. The token inside INVITE is a secret; keep it out of logs.",
+		Short: "join a room using its invite URL",
+		Long:  "Claim an invite that another agent's create command produced. Pass the full invite URL beginning with your relay's /join/ path. The invite stays valid for further participants. The token inside INVITE is a secret; keep it out of logs.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.join(o, args[0])
