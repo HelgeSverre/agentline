@@ -130,12 +130,24 @@ Use the exact A, AAAA, CNAME, or verification records returned by Fly. If Cloudf
 
 `/healthz` returns success only after SQLite opens and schema initialization completes. It performs a cheap database operation such as `SELECT 1`, avoids redirects and authentication, and does not depend on external services.
 
-Startup creates the schema if it is absent and does nothing otherwise. There is
-no migration path between schema versions, because relay data is disposable:
-rooms expire within days, and nothing in a relay database is worth carrying
-across a schema change. Deploy a release whose schema differs from the one on
-disk by deleting the database file first, which the next start recreates. On Fly
-that means removing `/data/agentline.db` on the attached volume.
+Startup migrates the database to the schema the running binary expects, then
+serves. Each schema revision is an entry in `schemaVersions`, and a database
+records how many it has applied in SQLite's `PRAGMA user_version`, so a start
+runs only the entries that database has not seen, in order, one transaction
+each. A revision that fails leaves the version untouched, so the next start
+retries it rather than skipping past it.
+
+Deploys therefore need no migration step and no release-command Machine, which
+is just as well: Fly release-command Machines do not receive attached volumes,
+so they could not reach this database anyway.
+
+A relay refuses to start against a database written by a newer Agentline than
+itself, rather than operating on a layout it does not understand. Roll forward
+to the newer release, or start the older one against a fresh data directory.
+
+To add a schema change, append to `schemaVersions`. Never edit or reorder an
+entry that has shipped: it has already run on somebody's database and will not
+run there again.
 
 ## Autostop
 

@@ -30,55 +30,11 @@ func OpenSQLite(path string, now func() time.Time) (Store, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	s := &sqliteStore{db: db, now: now}
-	if err := s.createSchema(context.Background()); err != nil {
+	if err := migrate(context.Background(), db, schemaVersions); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return s, nil
-}
-
-// createSchema declares the schema. Relay data is disposable, so there is no
-// upgrade path from an older layout: rooms expire within days, and a relay
-// carrying a database from an earlier schema is started against a fresh data
-// directory rather than converted.
-func (s *sqliteStore) createSchema(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS rooms (
- id TEXT PRIMARY KEY, public_name TEXT NOT NULL,
- max_participants INTEGER CHECK(max_participants > 0),
- status TEXT NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 1,
- created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
- ended_at INTEGER, ended_by TEXT
-);
-CREATE TABLE IF NOT EXISTS participants (
- id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
- name TEXT NOT NULL, token_hash BLOB NOT NULL UNIQUE, joined_at INTEGER NOT NULL,
- UNIQUE(room_id, id)
-);
-CREATE TABLE IF NOT EXISTS invites (
- id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
- token_hash BLOB NOT NULL UNIQUE
-);
-CREATE TABLE IF NOT EXISTS inspectors (
- room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE,
- token_hash BLOB NOT NULL UNIQUE
-);
-CREATE TABLE IF NOT EXISTS messages (
- id TEXT NOT NULL, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
- sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, recipient_id TEXT,
- kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '',
- created_at INTEGER NOT NULL, PRIMARY KEY(room_id, id), UNIQUE(room_id, sequence),
- FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id),
- FOREIGN KEY(room_id, recipient_id) REFERENCES participants(room_id, id)
-);
-CREATE INDEX IF NOT EXISTS messages_after ON messages(room_id, sequence);
-CREATE INDEX IF NOT EXISTS messages_recipient_after ON messages(room_id, recipient_id, sequence);
-CREATE INDEX IF NOT EXISTS participants_room ON participants(room_id, joined_at, id);
-CREATE INDEX IF NOT EXISTS rooms_expiry ON rooms(expires_at);`)
-	if err != nil {
-		return fmt.Errorf("create sqlite schema: %w", err)
-	}
-	return nil
 }
 
 func (s *sqliteStore) CreateRoom(ctx context.Context, p CreateRoomParams) (CreatedRoom, error) {
