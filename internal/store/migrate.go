@@ -66,8 +66,18 @@ CREATE INDEX IF NOT EXISTS rooms_expiry ON rooms(expires_at);`,
 // interrupted run resumes at the entry that failed rather than repeating work
 // that already landed.
 func migrate(ctx context.Context, db *sql.DB, versions []string) error {
+	// Everything below runs on one pinned connection. PRAGMA foreign_keys is
+	// connection state, not database state, so a pool could otherwise apply it
+	// to one connection and run the migration on another, and could hand a
+	// connection still carrying foreign_keys=OFF to ordinary traffic afterwards.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Close()
+
 	var applied int
-	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&applied); err != nil {
+	if err := conn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&applied); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 	if applied > len(versions) {
@@ -78,29 +88,47 @@ func migrate(ctx context.Context, db *sql.DB, versions []string) error {
 	}
 
 	// Rebuilding a table means dropping and renaming it, which foreign keys
-	// would refuse. They are disabled only for the duration of the migration,
-	// before the store serves anything.
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+	// would refuse. They are off only for this connection, and only until the
+	// migration finishes, which happens before the store serves anything.
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
 		return fmt.Errorf("disable foreign keys for migration: %w", err)
 	}
-	defer db.ExecContext(context.WithoutCancel(ctx), `PRAGMA foreign_keys=ON`)
 
 	for version := applied; version < len(versions); version++ {
-		if err := applyVersion(ctx, db, version, versions[version]); err != nil {
+		if err := applyVersion(ctx, conn, version, versions[version]); err != nil {
+			restoreForeignKeys(ctx, conn)
 			return err
 		}
 	}
 
 	// A rebuilt table leaves the old pages behind; reclaim them once, after the
 	// last migration, rather than inside a transaction where VACUUM is illegal.
-	if _, err := db.ExecContext(ctx, `VACUUM`); err != nil {
+	if _, err := conn.ExecContext(ctx, `VACUUM`); err != nil {
+		restoreForeignKeys(ctx, conn)
 		return fmt.Errorf("vacuum after migration: %w", err)
+	}
+	return restoreForeignKeys(ctx, conn)
+}
+
+// restoreForeignKeys puts the connection back the way ordinary traffic expects
+// it before it returns to the pool, and refuses to continue if it cannot: a
+// relay serving requests with foreign keys unenforced would corrupt quietly.
+func restoreForeignKeys(ctx context.Context, conn *sql.Conn) error {
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		return fmt.Errorf("re-enable foreign keys after migration: %w", err)
+	}
+	var on int
+	if err := conn.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&on); err != nil {
+		return fmt.Errorf("verify foreign keys after migration: %w", err)
+	}
+	if on != 1 {
+		return fmt.Errorf("foreign keys remained disabled after migration")
 	}
 	return nil
 }
 
-func applyVersion(ctx context.Context, db *sql.DB, version int, statements string) error {
-	tx, err := db.BeginTx(ctx, nil)
+func applyVersion(ctx context.Context, conn *sql.Conn, version int, statements string) error {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin schema version %d: %w", version, err)
 	}

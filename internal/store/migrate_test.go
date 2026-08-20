@@ -169,3 +169,74 @@ func TestMigrateRefusesADatabaseFromANewerBuild(t *testing.T) {
 		t.Fatalf("err = %v, want a refusal naming a newer build", err)
 	}
 }
+
+// A version may rebuild a table, which requires foreign keys to be off. That
+// pragma is connection state, so this also checks the pool is left the way
+// ordinary traffic expects it: a connection still carrying foreign_keys=OFF
+// would let later writes violate references silently.
+func TestMigrateRebuildsTablesWithoutLeavingForeignKeysDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rebuild.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// Put several connections in the pool first, so the migration cannot rely
+	// on being handed the same one twice by chance.
+	var held []*sql.Conn
+	for i := 0; i < 5; i++ {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.PingContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, c)
+	}
+	for _, c := range held {
+		c.Close()
+	}
+
+	if err := migrate(ctx, db, schemaVersions); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO rooms(id,public_name,status,next_sequence,created_at,expires_at) VALUES('r','n','active',1,0,9000000000000000000)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO participants(id,room_id,name,token_hash,joined_at) VALUES('p','r','alice',x'00',0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later version rebuilds participants, which rooms and messages reference.
+	rebuild := append(append([]string{}, schemaVersions...), `
+ALTER TABLE participants RENAME TO participants_old;
+CREATE TABLE participants (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, name TEXT NOT NULL, token_hash BLOB NOT NULL UNIQUE, joined_at INTEGER NOT NULL, nickname TEXT NOT NULL DEFAULT '', UNIQUE(room_id, id));
+INSERT INTO participants(id,room_id,name,token_hash,joined_at) SELECT id,room_id,name,token_hash,joined_at FROM participants_old;
+DROP TABLE participants_old;`)
+	if err := migrate(ctx, db, rebuild); err != nil {
+		t.Fatalf("rebuilding a referenced table failed: %v", err)
+	}
+
+	var nickname string
+	if err := db.QueryRowContext(ctx, `SELECT nickname FROM participants WHERE id='p'`).Scan(&nickname); err != nil {
+		t.Fatalf("rebuild lost the row: %v", err)
+	}
+
+	// Every connection the pool hands out must enforce foreign keys again.
+	for i := 0; i < 10; i++ {
+		var on int
+		if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&on); err != nil {
+			t.Fatal(err)
+		}
+		if on != 1 {
+			t.Fatalf("a pooled connection reports foreign_keys=%d after migration", on)
+		}
+	}
+	// And enforcement is real, not just reported.
+	if _, err := db.ExecContext(ctx, `INSERT INTO participants(id,room_id,name,token_hash,joined_at) VALUES('x','nosuchroom','bob',x'01',0)`); err == nil {
+		t.Fatal("foreign keys are not being enforced after migration")
+	}
+}
