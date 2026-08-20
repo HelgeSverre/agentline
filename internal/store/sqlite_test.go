@@ -87,33 +87,6 @@ func TestCreateRoomUsesFixedExpiryAndStoresOnlyHashes(t *testing.T) {
 	}
 }
 
-func TestOpenSQLiteMigratesLegacyTwoParticipantSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "legacy.db")
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`
-CREATE TABLE rooms (id TEXT PRIMARY KEY, public_name TEXT NOT NULL, max_participants INTEGER NOT NULL CHECK(max_participants BETWEEN 1 AND 2), status TEXT NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, ended_at INTEGER, ended_by TEXT);
-CREATE TABLE participants (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, name TEXT NOT NULL, token_hash BLOB NOT NULL UNIQUE, joined_at INTEGER NOT NULL, UNIQUE(room_id, id));
-CREATE TABLE invites (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, token_hash BLOB NOT NULL UNIQUE, claimed_at INTEGER, claimed_by TEXT REFERENCES participants(id));
-CREATE TABLE messages (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, UNIQUE(room_id, sequence), FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id));`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	s, err := OpenSQLite(path, time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	created, err := s.CreateRoom(context.Background(), CreateRoomParams{Name: "group", CreatorName: "alice", TTL: time.Hour})
-	if err != nil || created.Room.MaxParticipants != nil {
-		t.Fatalf("unlimited create = %+v, %v", created.Room, err)
-	}
-}
-
 func TestInspectReadsPersistedTranscriptUntilExpiry(t *testing.T) {
 	s, clock, _ := openTestStore(t)
 	created, claimed := createAndClaim(t, s)

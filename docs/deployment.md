@@ -126,11 +126,16 @@ Use the exact A, AAAA, CNAME, or verification records returned by Fly. If Cloudf
 
 `--public-url https://agentline.dev` makes generated invites use the canonical domain rather than a Fly hostname or forwarded request header.
 
-## Health and migrations
+## Health and schema
 
 `/healthz` returns success only after SQLite opens and schema initialization completes. It performs a cheap database operation such as `SELECT 1`, avoids redirects and authentication, and does not depend on external services.
 
-SQLite schema migration runs idempotently during normal application startup before readiness. Fly release-command Machines do not receive attached volumes, so they cannot migrate this database safely.
+Startup creates the schema if it is absent and does nothing otherwise. There is
+no migration path between schema versions, because relay data is disposable:
+rooms expire within days, and nothing in a relay database is worth carrying
+across a schema change. Deploy a release whose schema differs from the one on
+disk by deleting the database file first, which the next start recreates. On Fly
+that means removing `/data/agentline.db` on the attached volume.
 
 ## Autostop
 

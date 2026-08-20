@@ -30,33 +30,19 @@ func OpenSQLite(path string, now func() time.Time) (Store, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	s := &sqliteStore{db: db, now: now}
-	if err := s.migrate(context.Background()); err != nil {
+	if err := s.createSchema(context.Background()); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
-func (s *sqliteStore) migrate(ctx context.Context) error {
-	legacy, err := s.legacySchema(ctx)
-	if err != nil {
-		return err
-	}
-	if legacy {
-		if err := s.migrateLegacySchema(ctx); err != nil {
-			return err
-		}
-	}
-	global, err := s.globalMessageIDs(ctx)
-	if err != nil {
-		return err
-	}
-	if global {
-		if err := s.migrateMessageIDScope(ctx); err != nil {
-			return err
-		}
-	}
-	_, err = s.db.ExecContext(ctx, `
+// createSchema declares the schema. Relay data is disposable, so there is no
+// upgrade path from an older layout: rooms expire within days, and a relay
+// carrying a database from an earlier schema is started against a fresh data
+// directory rather than converted.
+func (s *sqliteStore) createSchema(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS rooms (
  id TEXT PRIMARY KEY, public_name TEXT NOT NULL,
  max_participants INTEGER CHECK(max_participants > 0),
@@ -90,133 +76,7 @@ CREATE INDEX IF NOT EXISTS messages_recipient_after ON messages(room_id, recipie
 CREATE INDEX IF NOT EXISTS participants_room ON participants(room_id, joined_at, id);
 CREATE INDEX IF NOT EXISTS rooms_expiry ON rooms(expires_at);`)
 	if err != nil {
-		return fmt.Errorf("migrate sqlite: %w", err)
-	}
-	return nil
-}
-
-// legacySchema identifies databases written by the two-participant release.
-// Its messages table has no recipient_id, so merely using CREATE TABLE IF NOT
-// EXISTS would leave the old capacity constraint and make upgraded relays fail.
-func (s *sqliteStore) legacySchema(ctx context.Context) (bool, error) {
-	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(messages)`)
-	if err != nil {
-		return false, fmt.Errorf("inspect sqlite schema: %w", err)
-	}
-	defer rows.Close()
-	foundColumn := false
-	for rows.Next() {
-		foundColumn = true
-		var cid int
-		var name, kind string
-		var notNull, primaryKey int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
-			return false, fmt.Errorf("inspect sqlite schema: %w", err)
-		}
-		if name == "recipient_id" {
-			return false, nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("inspect sqlite schema: %w", err)
-	}
-	// No rows means a fresh database, not a legacy one.
-	return foundColumn, nil
-}
-
-// globalMessageIDs identifies databases whose message IDs are unique across the
-// whole relay rather than within a room. Clients choose those IDs, and agents
-// derive them from message content, so two unrelated rooms readily pick the
-// same one; under the old schema the second room's message was rejected.
-func (s *sqliteStore) globalMessageIDs(ctx context.Context) (bool, error) {
-	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(messages)`)
-	if err != nil {
-		return false, fmt.Errorf("inspect sqlite schema: %w", err)
-	}
-	defer rows.Close()
-	idIsWholeKey := false
-	for rows.Next() {
-		var cid int
-		var name, kind string
-		var notNull, primaryKey int
-		var defaultValue any
-		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
-			return false, fmt.Errorf("inspect sqlite schema: %w", err)
-		}
-		// In PRIMARY KEY(room_id, id) both columns report a position, so a
-		// room_id outside the key marks the old single-column form.
-		if name == "id" && primaryKey == 1 {
-			idIsWholeKey = true
-		}
-		if name == "room_id" && primaryKey != 0 {
-			return false, nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("inspect sqlite schema: %w", err)
-	}
-	return idIsWholeKey, nil
-}
-
-// migrateMessageIDScope rebuilds messages so an ID only has to be unique within
-// its room. Existing rows are globally unique, so they satisfy the narrower
-// constraint unchanged.
-func (s *sqliteStore) migrateMessageIDScope(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
-		return fmt.Errorf("disable foreign keys for schema migration: %w", err)
-	}
-	defer s.db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin message ID migration: %w", err)
-	}
-	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `
-ALTER TABLE messages RENAME TO globally_keyed_messages;
-CREATE TABLE messages (id TEXT NOT NULL, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, recipient_id TEXT, kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, PRIMARY KEY(room_id, id), UNIQUE(room_id, sequence), FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id), FOREIGN KEY(room_id, recipient_id) REFERENCES participants(room_id, id));
-INSERT INTO messages(id,room_id,sequence,sender_id,recipient_id,kind,body,reply_to,created_at) SELECT id,room_id,sequence,sender_id,recipient_id,kind,body,reply_to,created_at FROM globally_keyed_messages;
-DROP TABLE globally_keyed_messages;`); err != nil {
-		return fmt.Errorf("migrate message ID scope: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit message ID migration: %w", err)
-	}
-	return nil
-}
-
-func (s *sqliteStore) migrateLegacySchema(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
-		return fmt.Errorf("disable foreign keys for schema migration: %w", err)
-	}
-	defer s.db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin schema migration: %w", err)
-	}
-	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `
-ALTER TABLE messages RENAME TO legacy_messages;
-ALTER TABLE invites RENAME TO legacy_invites;
-ALTER TABLE participants RENAME TO legacy_participants;
-ALTER TABLE rooms RENAME TO legacy_rooms;
-CREATE TABLE rooms (id TEXT PRIMARY KEY, public_name TEXT NOT NULL, max_participants INTEGER CHECK(max_participants > 0), status TEXT NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, ended_at INTEGER, ended_by TEXT);
-CREATE TABLE participants (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, name TEXT NOT NULL, token_hash BLOB NOT NULL UNIQUE, joined_at INTEGER NOT NULL, UNIQUE(room_id, id));
-CREATE TABLE invites (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, token_hash BLOB NOT NULL UNIQUE);
-CREATE TABLE messages (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, recipient_id TEXT, kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, UNIQUE(room_id, sequence), FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id), FOREIGN KEY(room_id, recipient_id) REFERENCES participants(room_id, id));
-INSERT INTO rooms SELECT id,public_name,max_participants,status,next_sequence,created_at,expires_at,ended_at,ended_by FROM legacy_rooms;
-INSERT INTO participants SELECT id,room_id,name,token_hash,joined_at FROM legacy_participants;
-INSERT INTO invites SELECT id,room_id,token_hash FROM legacy_invites WHERE claimed_at IS NULL;
-INSERT INTO messages(id,room_id,sequence,sender_id,kind,body,reply_to,created_at) SELECT id,room_id,sequence,sender_id,kind,body,reply_to,created_at FROM legacy_messages;
-DROP TABLE legacy_messages;
-DROP TABLE legacy_invites;
-DROP TABLE legacy_participants;
-DROP TABLE legacy_rooms;`)
-	if err != nil {
-		return fmt.Errorf("migrate legacy sqlite schema: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit sqlite schema migration: %w", err)
+		return fmt.Errorf("create sqlite schema: %w", err)
 	}
 	return nil
 }

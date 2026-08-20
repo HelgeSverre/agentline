@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -78,56 +77,5 @@ func TestRetryAfterALostResponseReturnsTheOriginal(t *testing.T) {
 	params.Body = "something else"
 	if _, err := s.Append(ctx, params); err != ErrConflict {
 		t.Fatalf("reusing a key for new content = %v, want ErrConflict", err)
-	}
-}
-
-// TestMigrationRescopesGloballyKeyedMessages upgrades a database written with
-// the old global primary key and checks both that history survives and that the
-// new constraint is in force.
-func TestMigrationRescopesGloballyKeyedMessages(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "old.db")
-	raw, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(0)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := raw.Exec(`
-CREATE TABLE rooms (id TEXT PRIMARY KEY, public_name TEXT NOT NULL, max_participants INTEGER CHECK(max_participants > 0), status TEXT NOT NULL, next_sequence INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, ended_at INTEGER, ended_by TEXT);
-CREATE TABLE participants (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, name TEXT NOT NULL, token_hash BLOB NOT NULL UNIQUE, joined_at INTEGER NOT NULL, UNIQUE(room_id, id));
-CREATE TABLE invites (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, token_hash BLOB NOT NULL UNIQUE);
-CREATE TABLE inspectors (room_id TEXT PRIMARY KEY REFERENCES rooms(id) ON DELETE CASCADE, token_hash BLOB NOT NULL UNIQUE);
-CREATE TABLE messages (id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, recipient_id TEXT, kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, UNIQUE(room_id, sequence), FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id), FOREIGN KEY(room_id, recipient_id) REFERENCES participants(room_id, id));
-INSERT INTO rooms(id,public_name,max_participants,status,next_sequence,created_at,expires_at) VALUES ('r1','old',NULL,'active',2,0,9000000000000000000);
-INSERT INTO participants(id,room_id,name,token_hash,joined_at) VALUES ('p1','r1','alice',x'00',0);
-INSERT INTO messages(id,room_id,sequence,sender_id,kind,body,reply_to,created_at) VALUES ('shared','r1',1,'p1','message','history',	'',0);`); err != nil {
-		t.Fatal(err)
-	}
-	raw.Close()
-
-	s, err := OpenSQLite(path, nil)
-	if err != nil {
-		t.Fatalf("migration failed: %v", err)
-	}
-	defer s.Close()
-	ctx := context.Background()
-
-	// History survived.
-	visible, err := s.MessagesAfter(ctx, "r1", "p1", 0, 10, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(visible.Messages) != 1 || visible.Messages[0].Body != "history" {
-		t.Fatalf("history lost in migration: %+v", visible.Messages)
-	}
-
-	// The key that was globally taken is now reusable in another room.
-	other, sender := room(t, s, "new")
-	if _, err := s.Append(ctx, AppendParams{RoomID: other, ParticipantID: sender, MessageID: "shared", Body: "reused", Kind: "message"}); err != nil {
-		t.Fatalf("key still globally reserved after migration: %v", err)
-	}
-	// Running migration again on the upgraded database is a no-op.
-	if again, err := OpenSQLite(path, nil); err != nil {
-		t.Fatalf("reopening a migrated database failed: %v", err)
-	} else {
-		again.Close()
 	}
 }
