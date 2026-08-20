@@ -143,8 +143,11 @@ func TestToolSchemasAndArgumentRejection(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantRequired := map[string][]string{
-		"create_room": {}, "join_room": {"invite_url"}, "send_message": {"body", "message_id"},
-		"read_messages": {}, "wait_for_message": {}, "end_conversation": {"message_id"}, "get_room_status": {},
+		// message_id is deliberately not required. Agents derive keys from
+		// message content, so making them invent one produced collisions; the
+		// adapter generates a random key when it is omitted.
+		"create_room": {}, "join_room": {"invite_url"}, "send_message": {"body"},
+		"read_messages": {}, "wait_for_message": {}, "end_conversation": {}, "get_room_status": {},
 	}
 	for _, tool := range listed.Tools {
 		schema := tool.InputSchema.(map[string]any)
@@ -164,9 +167,7 @@ func TestToolSchemasAndArgumentRejection(t *testing.T) {
 	}{
 		{"join_room", map[string]any{}},
 		{"send_message", map[string]any{}},
-		{"send_message", map[string]any{"body": "hello"}},
 		{"send_message", map[string]any{"body": 123, "message_id": "malformed-send"}},
-		{"end_conversation", map[string]any{}},
 	} {
 		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: test.name, Arguments: test.args})
 		if err == nil || result != nil {
@@ -176,18 +177,6 @@ func TestToolSchemasAndArgumentRejection(t *testing.T) {
 	result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "join_room", Arguments: map[string]any{"invite_url": "not-an-invite"}})
 	if err != nil || !result.IsError {
 		t.Fatalf("handler failure result=%v error=%v, want IsError", result, err)
-	}
-	for _, test := range []struct {
-		name string
-		args map[string]any
-	}{
-		{"send_message", map[string]any{"body": "hello", "message_id": ""}},
-		{"end_conversation", map[string]any{"message_id": ""}},
-	} {
-		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: test.name, Arguments: test.args})
-		if err != nil || !result.IsError || !strings.Contains(mustJSON(t, result), "message_id must not be empty") {
-			t.Fatalf("%s empty message_id result=%v error=%v, want tool error", test.name, result, err)
-		}
 	}
 }
 
@@ -342,4 +331,41 @@ func mustJSON(t *testing.T, value any) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// TestSendWithoutMessageIDGeneratesAKey covers the normal path. Requiring the
+// model to invent a key produced content-derived slugs that collided; the
+// adapter now supplies a random one, and two rooms may hold the same key.
+func TestSendWithoutMessageIDGeneratesAKey(t *testing.T) {
+	db, err := store.OpenSQLite(filepath.Join(t.TempDir(), "relay.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayServer := httptest.NewServer(relay.NewHandler(db, relay.Config{}, time.Now))
+	t.Cleanup(func() { relayServer.Close(); db.Close() })
+
+	send := func(args map[string]any) map[string]any {
+		client := connect(t, Dependencies{Config: localconfig.Store{Root: t.TempDir()}, HTTP: relayServer.Client()})
+		call(t, client, "create_room", map[string]any{"server": relayServer.URL, "room_name": "r", "participant_name": "a", "ttl_seconds": 3600})
+		return call(t, client, "send_message", args)
+	}
+
+	first := send(map[string]any{"body": "hello"})
+	id, _ := first["id"].(string)
+	if id == "" {
+		t.Fatalf("no key generated: %#v", first)
+	}
+
+	second := send(map[string]any{"body": "hello"})
+	if other, _ := second["id"].(string); other == id {
+		t.Fatalf("two sends generated the same key %q", id)
+	}
+
+	// A caller-chosen key still works, and the same one is free in another room.
+	if got, _ := send(map[string]any{"body": "x", "message_id": "shared-key"})["id"].(string); got != "shared-key" {
+		t.Fatalf("supplied key not honoured: %q", got)
+	}
+	if got, _ := send(map[string]any{"body": "y", "message_id": "shared-key"})["id"].(string); got != "shared-key" {
+		t.Fatalf("the same key was rejected in a second room: %q", got)
+	}
 }

@@ -47,6 +47,15 @@ func (s *sqliteStore) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	global, err := s.globalMessageIDs(ctx)
+	if err != nil {
+		return err
+	}
+	if global {
+		if err := s.migrateMessageIDScope(ctx); err != nil {
+			return err
+		}
+	}
 	_, err = s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS rooms (
  id TEXT PRIMARY KEY, public_name TEXT NOT NULL,
@@ -69,10 +78,10 @@ CREATE TABLE IF NOT EXISTS inspectors (
  token_hash BLOB NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS messages (
- id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+ id TEXT NOT NULL, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
  sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, recipient_id TEXT,
  kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '',
- created_at INTEGER NOT NULL, UNIQUE(room_id, sequence),
+ created_at INTEGER NOT NULL, PRIMARY KEY(room_id, id), UNIQUE(room_id, sequence),
  FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id),
  FOREIGN KEY(room_id, recipient_id) REFERENCES participants(room_id, id)
 );
@@ -114,6 +123,66 @@ func (s *sqliteStore) legacySchema(ctx context.Context) (bool, error) {
 	}
 	// No rows means a fresh database, not a legacy one.
 	return foundColumn, nil
+}
+
+// globalMessageIDs identifies databases whose message IDs are unique across the
+// whole relay rather than within a room. Clients choose those IDs, and agents
+// derive them from message content, so two unrelated rooms readily pick the
+// same one; under the old schema the second room's message was rejected.
+func (s *sqliteStore) globalMessageIDs(ctx context.Context) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(messages)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect sqlite schema: %w", err)
+	}
+	defer rows.Close()
+	idIsWholeKey := false
+	for rows.Next() {
+		var cid int
+		var name, kind string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("inspect sqlite schema: %w", err)
+		}
+		// In PRIMARY KEY(room_id, id) both columns report a position, so a
+		// room_id outside the key marks the old single-column form.
+		if name == "id" && primaryKey == 1 {
+			idIsWholeKey = true
+		}
+		if name == "room_id" && primaryKey != 0 {
+			return false, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("inspect sqlite schema: %w", err)
+	}
+	return idIsWholeKey, nil
+}
+
+// migrateMessageIDScope rebuilds messages so an ID only has to be unique within
+// its room. Existing rows are globally unique, so they satisfy the narrower
+// constraint unchanged.
+func (s *sqliteStore) migrateMessageIDScope(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for schema migration: %w", err)
+	}
+	defer s.db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin message ID migration: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `
+ALTER TABLE messages RENAME TO globally_keyed_messages;
+CREATE TABLE messages (id TEXT NOT NULL, room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, sender_id TEXT NOT NULL, recipient_id TEXT, kind TEXT NOT NULL, body TEXT NOT NULL, reply_to TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, PRIMARY KEY(room_id, id), UNIQUE(room_id, sequence), FOREIGN KEY(room_id, sender_id) REFERENCES participants(room_id, id), FOREIGN KEY(room_id, recipient_id) REFERENCES participants(room_id, id));
+INSERT INTO messages(id,room_id,sequence,sender_id,recipient_id,kind,body,reply_to,created_at) SELECT id,room_id,sequence,sender_id,recipient_id,kind,body,reply_to,created_at FROM globally_keyed_messages;
+DROP TABLE globally_keyed_messages;`); err != nil {
+		return fmt.Errorf("migrate message ID scope: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit message ID migration: %w", err)
+	}
+	return nil
 }
 
 func (s *sqliteStore) migrateLegacySchema(ctx context.Context) error {
@@ -402,7 +471,7 @@ func (s *sqliteStore) append(ctx context.Context, p AppendParams, closeRoom bool
 	if err = activeAt(room, s.now()); err != nil {
 		return model.Message{}, err
 	}
-	if existing, found, err := findMessage(ctx, tx, p.MessageID); err != nil {
+	if existing, found, err := findMessage(ctx, tx, p.RoomID, p.MessageID); err != nil {
 		return model.Message{}, err
 	} else if found {
 		if sameMessage(existing, p) {
@@ -464,10 +533,13 @@ func sameMessage(existing model.Message, retry AppendParams) bool {
 		existing.To == retry.To
 }
 
-func findMessage(ctx context.Context, q queryer, id string) (model.Message, bool, error) {
+// findMessage looks an idempotency key up within its room. Keys are chosen by
+// clients, so scoping matters: two rooms picking the same key are two unrelated
+// messages, not a retry of one.
+func findMessage(ctx context.Context, q queryer, roomID, id string) (model.Message, bool, error) {
 	var m model.Message
 	var created int64
-	err := q.QueryRowContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.id=?`, id).Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.To, &m.Sequence, &m.Kind, &created)
+	err := q.QueryRowContext(ctx, `SELECT m.id,m.room_id,m.sender_id,p.name,m.body,m.reply_to,COALESCE(m.recipient_id,''),m.sequence,m.kind,m.created_at FROM messages m JOIN participants p ON p.id=m.sender_id WHERE m.room_id=? AND m.id=?`, roomID, id).Scan(&m.ID, &m.RoomID, &m.SenderID, &m.SenderName, &m.Body, &m.ReplyTo, &m.To, &m.Sequence, &m.Kind, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Message{}, false, nil
 	}
